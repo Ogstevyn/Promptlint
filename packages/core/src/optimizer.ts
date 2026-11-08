@@ -93,10 +93,10 @@ from openai import OpenAI
 
 # Routed through Mozilla Otari LLM Gateway for unified governance, caching & cost control
 otari_client = OpenAI(
-    base_url=os.environ.get("OTARI_BASE_URL", "https://api.otari.ai/api/v1"),
+    base_url=os.environ.get("OTARI_BASE_URL", "https://eu.api.otari.ai/api/v1"),
     api_key=os.environ.get("OTARI_API_KEY"),
     default_headers={
-        "Otari-Key": f"Bearer {os.environ.get('OTARI_API_KEY', '')}"
+        "Otari-Key": os.environ.get("OTARI_API_KEY", "")
     }
 )
 
@@ -148,10 +148,10 @@ import OpenAI from "openai";
 
 // Routed through Mozilla Otari LLM Gateway (/api/v1)
 const otari = new OpenAI({
-  baseURL: process.env.OTARI_BASE_URL || "https://api.otari.ai/api/v1",
+  baseURL: process.env.OTARI_BASE_URL || "https://eu.api.otari.ai/api/v1",
   apiKey: process.env.OTARI_API_KEY,
   defaultHeaders: {
-    "Otari-Key": \`Bearer \${process.env.OTARI_API_KEY}\`
+    "Otari-Key": process.env.OTARI_API_KEY || ""
   }
 });
 

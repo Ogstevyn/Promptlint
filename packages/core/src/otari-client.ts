@@ -1,6 +1,34 @@
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 import { getModelPricing } from "@promptlint/shared";
 import { estimateTokens } from "./tokenizer";
+
+function loadDotEnvIfNeeded() {
+  if (process.env.OTARI_API_KEY) return;
+  const candidatePaths = [
+    path.resolve(process.cwd(), ".env"),
+    path.resolve(process.cwd(), "../../.env")
+  ];
+  for (const envPath of candidatePaths) {
+    if (fs.existsSync(envPath)) {
+      const lines = fs.readFileSync(envPath, "utf-8").split(/\r?\n/);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const eqIdx = trimmed.indexOf("=");
+        if (eqIdx > 0) {
+          const key = trimmed.slice(0, eqIdx).trim();
+          const val = trimmed.slice(eqIdx + 1).trim();
+          if (!process.env[key]) {
+            process.env[key] = val;
+          }
+        }
+      }
+      break;
+    }
+  }
+}
 
 export interface OtariChatMessage {
   role: "system" | "user" | "assistant";
@@ -55,14 +83,18 @@ export class OtariGatewayClient {
   private apiKey: string | undefined;
 
   constructor(options?: { baseUrl?: string; apiKey?: string }) {
+    loadDotEnvIfNeeded();
     this.baseUrl = (
       options?.baseUrl ||
       process.env.OTARI_BASE_URL ||
-      "https://api.otari.ai/api/v1"
+      "https://eu.api.otari.ai/api/v1"
     ).replace(/\/+$/, "");
     const rawKey = options?.apiKey ?? process.env.OTARI_API_KEY;
     this.apiKey =
-      rawKey && rawKey !== "otari_your_api_key_here" && rawKey.trim().length > 0
+      rawKey &&
+      rawKey !== "otari_your_api_key_here" &&
+      rawKey !== "otk_v1_eu_your_api_key_here" &&
+      rawKey.trim().length > 0
         ? rawKey.trim()
         : undefined;
   }
@@ -103,8 +135,7 @@ export class OtariGatewayClient {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Otari-Key": `Bearer ${this.apiKey}`,
-            Authorization: `Bearer ${this.apiKey}`,
+            "Otari-Key": this.apiKey,
             "Idempotency-Key": idempotencyKey
           },
           body: JSON.stringify({

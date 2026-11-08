@@ -179,6 +179,16 @@ export const MODEL_PRICING_CATALOG: Record<string, ModelPricing> = {
     outputPerMillionUsd: 0.3,
     avgLatencyMs: 260,
     supportsPromptCaching: true
+  },
+  "alibaba/qwen-3.5-35b-a3b": {
+    model: "alibaba/qwen-3.5-35b-a3b",
+    provider: "alibaba",
+    tier: "fast",
+    inputPerMillionUsd: 0.14,
+    cachedInputPerMillionUsd: 0.07,
+    outputPerMillionUsd: 0.4,
+    avgLatencyMs: 290,
+    supportsPromptCaching: true
   }
 };
 
