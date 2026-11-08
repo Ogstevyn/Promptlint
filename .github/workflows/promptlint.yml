@@ -1,0 +1,45 @@
+name: PromptLint CI — Mozilla Otari Cost & Security Report
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  promptlint:
+    name: PromptLint & Mozilla Otari Cost Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Dependencies & Build
+        run: |
+          npm install
+          npm run build
+
+      - name: Run Unit & Integration Tests
+        run: npm test
+
+      - name: Generate Mozilla Otari PR Cost Report
+        env:
+          OTARI_API_KEY: ${{ secrets.OTARI_API_KEY }}
+          OTARI_BASE_URL: ${{ vars.OTARI_BASE_URL || 'https://api.otari.ai/api/v1' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          node packages/cli/dist/cli.js scan ./examples/vulnerable-app
+          node packages/cli/dist/cli.js ci-report ./examples/vulnerable-app --output promptlint-pr-report.md --post-pr
+          cat promptlint-pr-report.md >> $GITHUB_STEP_SUMMARY

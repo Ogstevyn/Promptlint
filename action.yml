@@ -1,0 +1,55 @@
+name: "PromptLint — Mozilla Otari LLM Linter & PR Cost Report"
+description: "Scans a repository for LLM prompts, flags cost/latency/injection smells, suggests rewrites, and calculates Mozilla Otari Gateway savings per PR."
+author: "ogstevyn"
+branding:
+  icon: "zap"
+  color: "purple"
+
+inputs:
+  target-path:
+    description: "Directory or file path to scan for LLM prompts"
+    required: false
+    default: "."
+  monthly-volume:
+    description: "Assumed monthly call volume per endpoint for cost projections"
+    required: false
+    default: "100000"
+  otari-api-key:
+    description: "Mozilla Otari Gateway API Key (Otari-Key)"
+    required: false
+  otari-base-url:
+    description: "Mozilla Otari Gateway Base URL"
+    required: false
+    default: "https://api.otari.ai/api/v1"
+  post-pr-comment:
+    description: "Automatically post the Markdown cost & security report on the Pull Request"
+    required: false
+    default: "true"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Install & Build PromptLint
+      shell: bash
+      run: |
+        npm install
+        npm run build
+
+    - name: Run PromptLint Scan & Generate Mozilla Otari PR Cost Report
+      shell: bash
+      env:
+        OTARI_API_KEY: ${{ inputs.otari-api-key }}
+        OTARI_BASE_URL: ${{ inputs.otari-base-url }}
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        node packages/cli/dist/cli.js ci-report "${{ inputs.target-path }}" --output promptlint-report.md --post-pr
+        if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+          cat promptlint-report.md >> "$GITHUB_STEP_SUMMARY"
+        fi

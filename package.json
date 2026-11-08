@@ -1,0 +1,28 @@
+{
+  "name": "promptlint-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PromptLint - Static & Semantic Linter, Optimizer, and Mozilla Otari Gateway Router for LLM Calls",
+  "workspaces": [
+    "packages/shared",
+    "packages/core",
+    "packages/cli",
+    "packages/server",
+    "packages/web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:server": "npm --workspace=@promptlint/server run dev",
+    "start:server": "npm --workspace=@promptlint/server run start",
+    "scan": "node packages/cli/dist/cli.js scan",
+    "optimize": "node packages/cli/dist/cli.js optimize",
+    "ci-report": "node packages/cli/dist/cli.js ci-report",
+    "test": "node --test packages/core/dist/__tests__/*.test.js packages/server/dist/__tests__/*.test.js"
+  },
+  "author": "ogstevyn",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@promptlint/cli",
+  "version": "1.0.0",
+  "bin": {
+    "promptlint": "./dist/cli.js"
+  },
+  "main": "./dist/cli.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@promptlint/shared": "1.0.0",
+    "@promptlint/core": "1.0.0"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@promptlint/server",
+  "version": "1.0.0",
+  "main": "./dist/server.js",
+  "types": "./dist/app.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node ./dist/server.js",
+    "dev": "tsc -p tsconfig.json && node ./dist/server.js"
+  },
+  "dependencies": {
+    "@promptlint/shared": "1.0.0",
+    "@promptlint/core": "1.0.0"
+  }
+}

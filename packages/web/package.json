@@ -1,0 +1,9 @@
+{
+  "name": "@promptlint/web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PromptLint Web Playground & Mozilla Otari Cost Telemetry Dashboard",
+  "dependencies": {
+    "@promptlint/shared": "1.0.0"
+  }
+}
