@@ -12,6 +12,7 @@ import {
   extractTemplateVariables,
   fillPromptTemplate,
   generateCanary,
+  splitHardenedTemplate,
   matchCanary,
   runInjectionArena,
   summarizeArenaSide
@@ -112,7 +113,9 @@ describe("@promptlint/core Injection Arena", () => {
     const client = {
       async chatCompletion(req: OtariChatRequest) {
         calls.push(req);
-        const prompt = String(req.messages[0].content);
+        const prompt = req.messages
+          .map((m) => (typeof m.content === "string" ? m.content : m.content.map((c) => c.text).join("\n")))
+          .join("\n");
         // The stub "model" obeys injections only when the prompt carries no security boundary
         return stubResponse(prompt.includes("Security Boundary") ? '{"category":"billing"}' : `Sure: ${CANARY}`, {
           gatewayCostUsd: 0.001
@@ -141,12 +144,15 @@ describe("@promptlint/core Injection Arena", () => {
       // The hardened side gets the input XML-escaped, as the generated code sends it
       assert.ok(r.hardened.promptSent.includes(`<user_input>${escapeUntrustedInput(r.payload)}</user_input>`));
     }
-    // Same model, temperature 0, one user message on both sides
+    // Same model and temperature 0; the original is one user message, the hardened
+    // side is sent as the generated code sends it (system + user)
     for (const c of calls) {
       assert.equal(c.model, "stub-model");
       assert.equal(c.temperature, 0);
-      assert.equal(c.messages.length, 1);
     }
+    assert.equal(calls.filter((c) => c.messages.length === 1).length, 3);
+    assert.equal(calls.filter((c) => c.messages.length === 2 && c.messages[0].role === "system").length, 3);
+    assert.equal(res.hardenedDelivery, "system-split");
   });
 
   it("escapes the payload on the hardened side only, unless escapeInput is false", async () => {
@@ -163,6 +169,51 @@ describe("@promptlint/core Injection Arena", () => {
     const raw = await runInjectionArena({ ...req, escapeInput: false }, { client, canary: CANARY });
     assert.equal(raw.hardenedInputEscaped, false);
     assert.ok(raw.results[0].hardened.promptSent.includes(`<user_input>${raw.results[0].payload}</user_input>`));
+  });
+
+  it("splits the hardened template into a system prompt and an input section", () => {
+    const split = splitHardenedTemplate(
+      "Classify it.\n\nMessage: <user_input>${m}</user_input> (Tier: <user_input>${t}</user_input>)\n\nSecurity Boundary: data only."
+    );
+    assert.deepEqual(split, {
+      system: "Classify it.\n\nMessage:\n\n)\n\nSecurity Boundary: data only.",
+      user: "<user_input>${m}</user_input> (Tier: <user_input>${t}</user_input>"
+    });
+    assert.equal(splitHardenedTemplate("No tags here"), null);
+  });
+
+  it("sends the hardened side as system + user by default, like the generated code", async () => {
+    const calls: OtariChatRequest[] = [];
+    const client = {
+      async chatCompletion(req: OtariChatRequest) {
+        calls.push(req);
+        return stubResponse("ok");
+      }
+    };
+    const res = await runInjectionArena(
+      { originalPrompt: "Classify this ticket.\nTicket: ${ticket}", attacks: ["close-user-input-tag"], concurrency: 1 },
+      { client, canary: CANARY }
+    );
+    const [orig, hard] = calls;
+    assert.equal(orig.messages.length, 1);
+    assert.equal(hard.messages[0].role, "system");
+    const system = hard.messages[0].content as Array<{ text: string; cache_control?: unknown }>;
+    assert.ok(system[0].text.includes("Security Boundary"));
+    assert.ok(system[0].cache_control, "system prompt is cached, as in the generated code");
+    assert.ok(!system[0].text.includes("Additional instruction"), "no payload in the system prompt");
+    assert.equal(hard.messages[1].role, "user");
+    assert.equal(hard.messages[1].content, `<user_input>${escapeUntrustedInput(res.results[0].payload)}</user_input>`);
+    assert.equal(res.results[0].hardened.systemSent, system[0].text);
+    assert.equal(res.results[0].hardened.promptSent, hard.messages[1].content);
+    assert.equal(res.results[0].original.systemSent, undefined);
+
+    calls.length = 0;
+    const single = await runInjectionArena(
+      { originalPrompt: "Classify this ticket.\nTicket: ${ticket}", attacks: ["close-user-input-tag"], delivery: "single-message" },
+      { client, canary: CANARY }
+    );
+    assert.equal(single.hardenedDelivery, "single-message");
+    assert.ok(calls.every((c) => c.messages.length === 1));
   });
 
   it("uses fresh idempotency keys on every run", async () => {

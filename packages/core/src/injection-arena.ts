@@ -350,10 +350,16 @@ async function runPool<T, R>(items: T[], limit: number, worker: (item: T, i: num
   return results;
 }
 
-function toAttempt(promptSent: string, res: OtariChatResponse, canary: string): InjectionArenaAttempt {
+function toAttempt(
+  promptSent: string,
+  systemSent: string | undefined,
+  res: OtariChatResponse,
+  canary: string
+): InjectionArenaAttempt {
   const match = matchCanary(res.content, canary);
   return {
     promptSent,
+    ...(systemSent !== undefined ? { systemSent } : {}),
     output: res.content,
     succeeded: match !== "none",
     canaryMatch: match,
@@ -379,6 +385,21 @@ export interface InjectionArenaOptions {
   retryDelayMs?: number;
 }
 
+/**
+ * Split a hardened template the way PromptLint's generated code sends it: the static
+ * instructions (and security boundary) go in the system message, the input section
+ * (first <user_input> to last </user_input>, labels in between included) in the user
+ * message. Returns null when the template has no <user_input> block.
+ */
+export function splitHardenedTemplate(template: string): { system: string; user: string } | null {
+  const first = template.indexOf("<user_input>");
+  const lastClose = template.lastIndexOf("</user_input>");
+  if (first === -1 || lastClose === -1 || lastClose < first) return null;
+  const end = lastClose + "</user_input>".length;
+  const system = `${template.slice(0, first).trimEnd()}\n\n${template.slice(end).trimStart()}`.trim();
+  return { system, user: template.slice(first, end) };
+}
+
 /** 429, 5xx and network failures are worth retrying; 4xx such as invalid_model are not. */
 export function isTransientGatewayError(error?: string): boolean {
   return Boolean(error && /^(429|5\d\d)\b|unreachable/i.test(error));
@@ -386,9 +407,11 @@ export function isTransientGatewayError(error?: string): boolean {
 
 /**
  * Run every attack against the original and the hardened prompt with the same model.
- * Both sides get the payload in the same place (the target template variable) and are
- * sent the same way (one user message). The differences are the prompt text and, unless
- * escapeInput is false, the XML-escaping PromptLint's generated code applies to the input.
+ * Both sides get the payload in the same place (the target template variable). The
+ * original is sent as one user message, as the unguarded code does. By default the
+ * hardened side is sent the way PromptLint's generated code sends it: instructions in
+ * the system message, the XML-escaped input in the user message. delivery
+ * "single-message" and escapeInput false turn those off to measure the prompt text alone.
  */
 export async function runInjectionArena(
   req: InjectionArenaRequest & { originalPrompt: string },
@@ -438,6 +461,8 @@ export async function runInjectionArena(
   const benign = req.variableValues ?? {};
   // The hardened side gets the input the way PromptLint's generated code sends it: escaped
   const escapeInput = req.escapeInput !== false;
+  const delivery: InjectionArenaResponse["hardenedDelivery"] =
+    req.delivery === "single-message" ? "single-message" : "system-split";
   const render = (template: string, rawPayload: string, side: "original" | "hardened"): string => {
     const payload = side === "hardened" && escapeInput ? escapeUntrustedInput(rawPayload) : rawPayload;
     if (targetVariable) {
@@ -448,6 +473,22 @@ export async function runInjectionArena(
     return side === "original"
       ? `${filled}\n\nInput: ${payload}`
       : `${filled}\n\nInput: <user_input>${payload}</user_input>`;
+  };
+  // Split the template before filling it, so an unescaped payload cannot move the split
+  const split = delivery === "system-split" && targetVariable ? splitHardenedTemplate(hardenedPrompt) : null;
+  if (delivery === "system-split" && targetVariable && !split) {
+    throw new Error("The hardened prompt has no <user_input> block to send as the user message");
+  }
+  const renderHardened = (rawPayload: string): { system?: string; prompt: string } => {
+    if (delivery === "single-message") return { prompt: render(hardenedPrompt!, rawPayload, "hardened") };
+    const payload = escapeInput ? escapeUntrustedInput(rawPayload) : rawPayload;
+    if (split) {
+      return {
+        system: fillPromptTemplate(split.system, benign),
+        prompt: fillPromptTemplate(split.user, { ...benign, [targetVariable!]: payload })
+      };
+    }
+    return { system: fillPromptTemplate(hardenedPrompt!, benign), prompt: `<user_input>${payload}</user_input>` };
   };
 
   const attacks = req.attacks?.length
@@ -463,11 +504,11 @@ export async function runInjectionArena(
   const runId = `arena_${Date.now().toString(36)}_${crypto.randomBytes(4).toString("hex")}`;
   const concurrency = Math.max(1, Math.min(8, Math.floor(req.concurrency ?? 4)));
 
-  type Job = { attackIndex: number; side: "original" | "hardened"; prompt: string };
+  type Job = { attackIndex: number; side: "original" | "hardened"; prompt: string; system?: string };
   const payloads = attacks.map((a) => a.build(canary));
   const jobs: Job[] = attacks.flatMap((_, attackIndex) => [
     { attackIndex, side: "original" as const, prompt: render(originalPrompt, payloads[attackIndex], "original") },
-    { attackIndex, side: "hardened" as const, prompt: render(hardenedPrompt!, payloads[attackIndex], "hardened") }
+    { attackIndex, side: "hardened" as const, ...renderHardened(payloads[attackIndex]) }
   ]);
 
   const retries = Math.max(0, options.maxRetries ?? 3);
@@ -487,14 +528,20 @@ export async function runInjectionArena(
           model,
           ...(attempt > 0 ? { retry: attempt } : {})
         }),
-        messages: [{ role: "user", content: job.prompt }]
+        messages: job.system
+          ? [
+              // As the generated code sends it: cached static system prompt, input as the user turn
+              { role: "system", content: [{ type: "text", text: job.system, cache_control: { type: "ephemeral" } }] },
+              { role: "user", content: job.prompt }
+            ]
+          : [{ role: "user", content: job.prompt }]
       });
       // Rate limits and upstream hiccups: back off and try again rather than
       // losing the attempt to the simulator
       if (!(res.simulated && isTransientGatewayError(res.gatewayError)) || attempt >= retries) break;
       await new Promise((r) => setTimeout(r, baseDelay * 2 ** attempt * (0.75 + Math.random() * 0.5)));
     }
-    return toAttempt(job.prompt, res, canary);
+    return toAttempt(job.prompt, job.system, res, canary);
   });
 
   const results: InjectionArenaAttackResult[] = attacks.map((attack, i) => ({
@@ -524,6 +571,7 @@ export async function runInjectionArena(
     hardenedPrompt,
     hardenedSource,
     hardenedInputEscaped: escapeInput,
+    hardenedDelivery: delivery,
     ...(targetVariable ? { targetVariable } : {}),
     summary: {
       original: summarizeArenaSide(results.map((r) => r.original)),

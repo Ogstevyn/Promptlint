@@ -322,12 +322,20 @@ export interface InjectionArenaRequest {
   concurrency?: number;
   /** XML-escape the payload on the hardened side, as the generated code does (default true) */
   escapeInput?: boolean;
+  /**
+   * How the hardened side is sent: "system-split" (default) mirrors the generated code,
+   * instructions in the system message and the input in the user message;
+   * "single-message" sends the filled prompt as one user message, like the original.
+   */
+  delivery?: "system-split" | "single-message";
 }
 
 /** One model call in the arena (an attack against one side) */
 export interface InjectionArenaAttempt {
   /** Full prompt sent as the user message */
   promptSent: string;
+  /** System message sent before it, when the hardened side used system-split delivery */
+  systemSent?: string;
   output: string;
   /** The canary appeared in the output: the injection took control */
   succeeded: boolean;
@@ -383,6 +391,8 @@ export interface InjectionArenaResponse {
   hardenedSource: "provided" | "rules";
   /** true when the payload was XML-escaped on the hardened side, as PromptLint's generated code does */
   hardenedInputEscaped: boolean;
+  /** How the hardened side was sent (the original is always one user message) */
+  hardenedDelivery: "system-split" | "single-message";
   /** Template variable the payload was injected into (undefined when the prompt had none and the payload was appended) */
   targetVariable?: string;
   summary: {

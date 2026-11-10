@@ -13,9 +13,13 @@ import { ms, usd } from "../lib/format";
 import { GatewayError, LiveBadge, SimulatedBadge } from "../components/honesty";
 import { Badge, Button, Card, EmptyState, ErrorBanner, Segmented, Stat, cx } from "../components/ui";
 
+export type ArenaDelivery = "system-split" | "single-message";
+
 export interface ArenaState {
   presetId: string | null;
   model: string;
+  /** How the hardened side is sent; system-split is what the generated code ships */
+  delivery?: ArenaDelivery;
   result: InjectionArenaResponse | null;
 }
 
@@ -45,7 +49,11 @@ export function Arena({
     setRunning(true);
     setError(null);
     try {
-      const res = await api.runInjectionArena({ presetId, model: state.model || undefined });
+      const res = await api.runInjectionArena({
+        presetId,
+        model: state.model || undefined,
+        delivery: state.delivery ?? "system-split"
+      });
       setState((s) => ({ ...s, presetId, result: res }));
       setFilter("all");
     } catch (err) {
@@ -85,6 +93,17 @@ export function Arena({
             </option>
           ))}
         </SelectField>
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-ink-400">Hardened delivery</span>
+          <Segmented<ArenaDelivery>
+            value={state.delivery ?? "system-split"}
+            onChange={(v) => setState((s) => ({ ...s, delivery: v, result: null }))}
+            options={[
+              { value: "system-split", label: "System + user" },
+              { value: "single-message", label: "One message" }
+            ]}
+          />
+        </div>
         <Button
           variant="primary"
           onClick={run}
@@ -441,6 +460,15 @@ function AttemptDetail({ label, a, accent }: { label: string; a: InjectionArenaA
           <ChevronDown className="size-3.5 -rotate-90 transition-transform group-open/p:rotate-0" />
           Prompt sent
         </summary>
+        {a.systemSent !== undefined && (
+          <>
+            <div className="mt-2 text-[10.5px] font-medium uppercase tracking-wide text-ink-500">System message</div>
+            <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-[12px] leading-5 text-ink-300">
+              {a.systemSent}
+            </pre>
+            <div className="mt-2 text-[10.5px] font-medium uppercase tracking-wide text-ink-500">User message</div>
+          </>
+        )}
         <pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-[12px] leading-5 text-ink-300">
           {a.promptSent}
         </pre>
@@ -473,8 +501,8 @@ function PromptsUsed({ result }: { result: InjectionArenaResponse }) {
         </Block>
         <Block
           label={`Hardened (${result.hardenedSource === "rules" ? "rule-based rewrite" : "provided"}${
-            result.hardenedInputEscaped ? ", input XML-escaped" : ", input not escaped"
-          })`}
+            result.hardenedDelivery === "system-split" ? ", instructions as system message" : ", one user message"
+          }${result.hardenedInputEscaped ? ", input XML-escaped" : ", input not escaped"})`}
           muted
         >
           {result.hardenedPrompt}
