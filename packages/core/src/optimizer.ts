@@ -7,7 +7,69 @@ import {
 } from "@promptlint/shared";
 import { scanCodeString } from "./rules";
 import { detectVerboseFiller, estimateTokens } from "./tokenizer";
-import { OtariGatewayClient, computeIdempotencyKey } from "./otari-client";
+import {
+  OtariChatResponse,
+  OtariGatewayClient,
+  computeIdempotencyKey
+} from "./otari-client";
+import { computeOutputAgreement } from "./similarity";
+
+const DEFAULT_OPTIMIZER_MODEL = "alibaba/qwen-3.5-35b-a3b";
+
+const OPTIMIZER_SYSTEM_PROMPT = `You are a prompt-compression engine. Rewrite the prompt you are given so it uses as few tokens as possible while keeping its exact task, output format and constraints.
+Rules:
+- Copy every <user_input>...</user_input> block exactly as written, including the placeholder inside it.
+- Keep the sentence that tells the model to treat <user_input> content as untrusted data.
+- Put static instructions first and the dynamic <user_input> block(s) last.
+- Do not add new instructions or change the requested output schema.
+Respond with JSON only, no markdown: {"optimizedPrompt": string, "changes": string[]}`;
+
+const BOUNDARY_DIRECTIVE_RE = /treat all content inside <user_input>/i;
+
+/** Pull a {"optimizedPrompt", "changes"} object out of an LLM reply, tolerating code fences. */
+export function parseOptimizerReply(
+  content: string
+): { optimizedPrompt: string; changes: string[] } | null {
+  const unfenced = content.replace(/```(?:json)?/gi, "").trim();
+  const start = unfenced.indexOf("{");
+  const end = unfenced.lastIndexOf("}");
+  if (start === -1 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(unfenced.slice(start, end + 1));
+    if (typeof parsed?.optimizedPrompt !== "string" || !parsed.optimizedPrompt.trim()) {
+      return null;
+    }
+    const changes = Array.isArray(parsed.changes)
+      ? parsed.changes.filter((c: unknown): c is string => typeof c === "string")
+      : [];
+    return { optimizedPrompt: parsed.optimizedPrompt.trim(), changes };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Accept an LLM rewrite only if it keeps every guarded placeholder and the security
+ * boundary from the rule-hardened prompt, and is actually shorter than it.
+ */
+export function validateOptimizerRewrite(
+  candidate: string,
+  hardenedPrompt: string
+): { ok: boolean; reason?: string } {
+  const guardedBlocks = hardenedPrompt.match(/<user_input>[\s\S]*?<\/user_input>/g) || [];
+  for (const block of guardedBlocks) {
+    if (!candidate.includes(block)) {
+      return { ok: false, reason: `dropped or altered ${block}` };
+    }
+  }
+  if (BOUNDARY_DIRECTIVE_RE.test(hardenedPrompt) && !BOUNDARY_DIRECTIVE_RE.test(candidate)) {
+    return { ok: false, reason: "removed the <user_input> security boundary" };
+  }
+  if (estimateTokens(candidate) >= estimateTokens(hardenedPrompt)) {
+    return { ok: false, reason: "was not shorter than the rule-based rewrite" };
+  }
+  return { ok: true };
+}
 
 export function compressAndHardenPrompt(
   rawPrompt: string,
@@ -20,12 +82,10 @@ export function compressAndHardenPrompt(
   const fillerResult = detectVerboseFiller(rawPrompt);
   let text = fillerResult.compressedText;
 
-  if (fillerResult.matches.length > 0 || fillerResult.tokensSaved > 0) {
+  const fillerTokensSaved = estimateTokens(rawPrompt) - estimateTokens(text);
+  if (fillerResult.matches.length > 0 && fillerTokensSaved > 0) {
     explanation.push(
-      `Compressed verbose filler phrases, saving ~${Math.max(
-        fillerResult.tokensSaved,
-        Math.round(estimateTokens(rawPrompt) * 0.18)
-      )} input tokens per call.`
+      `Removed ${fillerResult.matches.length} verbose filler phrase(s), saving ${fillerTokensSaved} input tokens per call.`
     );
   }
 
@@ -212,10 +272,11 @@ export async function optimizePromptAndCode(
   const recommendedModel =
     req.targetModel || primaryPrompt?.recommendedModel || "gpt-4o-mini";
 
-  const { optimizedPrompt, explanation } = compressAndHardenPrompt(
+  const hardened = compressAndHardenPrompt(
     rawPromptText,
     primaryPrompt?.interpolatedVariables || []
   );
+  const explanation = [...hardened.explanation];
 
   if (recommendedModel !== primaryPrompt?.detectedModel) {
     explanation.push(
@@ -226,28 +287,58 @@ export async function optimizePromptAndCode(
     "Configured Mozilla Otari `/api/v1` baseURL, `Otari-Key` auth, `cache_control: { type: 'ephemeral' }`, and deterministic SHA-256 `Idempotency-Key` header (PL007, PL008)."
   );
 
+  // Ask the Otari optimizer model to compress the rule-hardened prompt further.
   const otariClient = new OtariGatewayClient();
-  const telemetryCall = await otariClient.chatCompletion({
-    model: recommendedModel,
+  const optimizerModel = process.env.OTARI_OPTIMIZER_MODEL || DEFAULT_OPTIMIZER_MODEL;
+  const telemetryCall: OtariChatResponse = await otariClient.chatCompletion({
+    model: optimizerModel,
     temperature: 0,
-    max_tokens: 256,
+    max_tokens: Math.min(2048, Math.max(256, estimateTokens(hardened.optimizedPrompt) * 2)),
     messages: [
       {
         role: "system",
         content: [
           {
             type: "text",
-            text: "Compress and harden the following LLM prompt while preserving exact output constraints.",
+            text: OPTIMIZER_SYSTEM_PROMPT,
             cache_control: { type: "ephemeral" }
           }
         ]
       },
       {
         role: "user",
-        content: optimizedPrompt
+        content: hardened.optimizedPrompt
       }
     ]
   });
+
+  let optimizedPrompt = hardened.optimizedPrompt;
+  let optimizerSource: "llm" | "rules" = "rules";
+  if (telemetryCall.simulated) {
+    explanation.push(
+      "Otari optimizer model not called (no OTARI_API_KEY or gateway unreachable); used the rule-based rewrite."
+    );
+  } else {
+    const reply = parseOptimizerReply(telemetryCall.content);
+    const verdict = reply
+      ? validateOptimizerRewrite(reply.optimizedPrompt, hardened.optimizedPrompt)
+      : { ok: false, reason: "did not return the expected JSON" };
+    if (reply && verdict.ok) {
+      const saved =
+        estimateTokens(hardened.optimizedPrompt) - estimateTokens(reply.optimizedPrompt);
+      optimizedPrompt = reply.optimizedPrompt;
+      optimizerSource = "llm";
+      explanation.push(
+        `Compressed a further ${saved} tokens with '${optimizerModel}' via Mozilla Otari${
+          reply.changes.length > 0 ? `: ${reply.changes.slice(0, 4).join("; ")}` : "."
+        }`
+      );
+    } else {
+      explanation.push(
+        `Discarded the '${optimizerModel}' rewrite because it ${verdict.reason}; used the rule-based rewrite.`
+      );
+    }
+  }
 
   const optimizedCode = generateOtariOptimizedCode(
     req.code,
@@ -257,20 +348,13 @@ export async function optimizePromptAndCode(
     primaryPrompt?.interpolatedVariables || ["userInput"]
   );
 
-  const originalTokens = Math.max(
-    estimateTokens(rawPromptText),
-    primaryPrompt?.estimatedInputTokens || 50
-  );
-  const optimizedTokens = Math.min(
-    originalTokens - 5,
-    Math.max(15, estimateTokens(optimizedPrompt) - 12)
-  );
+  // Plain measured counts. This can be negative when security hardening
+  // (XML guards + boundary directive) adds more tokens than compression removes.
+  const originalTokens = estimateTokens(rawPromptText);
+  const optimizedTokens = estimateTokens(optimizedPrompt);
   const tokenReductionPercentage =
     originalTokens > 0
-      ? Math.max(
-          12,
-          Math.round(((originalTokens - optimizedTokens) / originalTokens) * 1000) / 10
-        )
+      ? Math.round(((originalTokens - optimizedTokens) / originalTokens) * 1000) / 10
       : 0;
 
   return {
@@ -291,8 +375,10 @@ export async function optimizePromptAndCode(
       idempotentReplayed: telemetryCall.idempotentReplayed,
       idempotencyKey: telemetryCall.idempotencyKey,
       cacheControlApplied: true,
-      latencyMs: telemetryCall.latencyMs
+      latencyMs: telemetryCall.latencyMs,
+      simulated: telemetryCall.simulated
     },
+    optimizerSource,
     explanation
   };
 }
@@ -354,16 +440,19 @@ export async function benchmarkPromptsViaOtari(
   const origPricing = getModelPricing(originalModel);
   const optPricing = getModelPricing(optimizedModel);
 
-  const origCostPerCall =
-    (origResult.inputTokens / 1_000_000) * origPricing.inputPerMillionUsd +
-    (origResult.outputTokens / 1_000_000) * origPricing.outputPerMillionUsd;
-
-  const optUncachedInput = Math.max(0, optResult.inputTokens - optResult.cachedTokens);
-  const optCostPerCall =
-    ((optUncachedInput / 1_000_000) * optPricing.inputPerMillionUsd +
-      (optResult.cachedTokens / 1_000_000) * optPricing.cachedInputPerMillionUsd +
-      (optResult.outputTokens / 1_000_000) * optPricing.outputPerMillionUsd) *
-    0.88; // 12% idempotency replay savings
+  const costPerCall = (
+    run: OtariChatResponse,
+    pricing: ReturnType<typeof getModelPricing>
+  ) => {
+    const uncachedInput = Math.max(0, run.inputTokens - run.cachedTokens);
+    return (
+      (uncachedInput / 1_000_000) * pricing.inputPerMillionUsd +
+      (run.cachedTokens / 1_000_000) * pricing.cachedInputPerMillionUsd +
+      (run.outputTokens / 1_000_000) * pricing.outputPerMillionUsd
+    );
+  };
+  const origCostPerCall = costPerCall(origResult, origPricing);
+  const optCostPerCall = costPerCall(optResult, optPricing);
 
   const origMonthly = origCostPerCall * monthlyVolume;
   const optMonthly = optCostPerCall * monthlyVolume;
@@ -399,13 +488,14 @@ export async function benchmarkPromptsViaOtari(
       promptUsed: req.originalPrompt,
       outputText: origResult.content,
       inputTokens: origResult.inputTokens,
-      cachedTokens: 0,
+      cachedTokens: origResult.cachedTokens,
       outputTokens: origResult.outputTokens,
       latencyMs: origResult.latencyMs,
       costPer1kCallsUsd: Number((origCostPerCall * 1000).toFixed(4)),
       monthlyProjectedCostUsd: Number(origMonthly.toFixed(2)),
       otariRequestId: origResult.otariRequestId,
-      idempotentReplayed: origResult.idempotentReplayed
+      idempotentReplayed: origResult.idempotentReplayed,
+      simulated: origResult.simulated
     },
     optimized: {
       model: optimizedModel,
@@ -418,7 +508,8 @@ export async function benchmarkPromptsViaOtari(
       costPer1kCallsUsd: Number((optCostPerCall * 1000).toFixed(4)),
       monthlyProjectedCostUsd: Number(optMonthly.toFixed(2)),
       otariRequestId: optResult.otariRequestId,
-      idempotentReplayed: optResult.idempotentReplayed
+      idempotentReplayed: optResult.idempotentReplayed,
+      simulated: optResult.simulated
     },
     comparison: {
       latencyReductionMs,
@@ -426,7 +517,11 @@ export async function benchmarkPromptsViaOtari(
       tokenReductionPercentage: tokenReductionPct,
       costReductionPercentage: costReductionPct,
       monthlySavingsUsd: Number(monthlySavings.toFixed(2)),
-      semanticEquivalenceScore: 98.4
+      // Only meaningful when both outputs came from real model calls
+      semanticEquivalenceScore:
+        origResult.simulated || optResult.simulated
+          ? null
+          : computeOutputAgreement(origResult.content, optResult.content)
     }
   };
 }

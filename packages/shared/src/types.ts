@@ -156,7 +156,11 @@ export interface OptimizeResponse {
     idempotencyKey: string;
     cacheControlApplied: boolean;
     latencyMs: number;
+    /** true when no live Otari call was made and the numbers come from the offline simulator */
+    simulated: boolean;
   };
+  /** "llm" when the Otari optimizer model's rewrite passed validation, "rules" for the deterministic fallback */
+  optimizerSource: "llm" | "rules";
   explanation: string[];
 }
 
@@ -181,6 +185,8 @@ export interface BenchmarkExecutionMetrics {
   monthlyProjectedCostUsd: number;
   otariRequestId: string;
   idempotentReplayed: boolean;
+  /** true when this run came from the offline simulator rather than a live Otari call */
+  simulated: boolean;
 }
 
 export interface BenchmarkResponse {
@@ -195,7 +201,8 @@ export interface BenchmarkResponse {
     tokenReductionPercentage: number;
     costReductionPercentage: number;
     monthlySavingsUsd: number;
-    semanticEquivalenceScore: number; // 0-100
+    /** 0-100 agreement between the two outputs; null when either side was simulated */
+    semanticEquivalenceScore: number | null;
   };
 }
 
@@ -220,6 +227,8 @@ export interface PRCostReport {
   costSummary: CostBreakdown;
   markdownComment: string;
   diagnostics: LintDiagnostic[];
+  /** true for illustrative reports pre-seeded into the demo server */
+  demoSeed?: boolean;
 }
 
 export interface DashboardStats {
@@ -237,4 +246,6 @@ export interface DashboardStats {
     count: number;
   }>;
   recentPRReports: PRCostReport[];
+  /** true when headline KPIs include illustrative pre-seeded demo figures */
+  demoSeed?: boolean;
 }
