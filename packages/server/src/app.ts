@@ -160,7 +160,7 @@ export function createPromptLintServer(): http.Server {
           targetModel: body.targetModel,
           monthlyVolume: body.monthlyVolume ? Number(body.monthlyVolume) : 100_000
         });
-        telemetryStore.recordOptimization();
+        telemetryStore.recordOptimization(optimized.tokenReductionPercentage);
         return sendJson(res, 200, optimized);
       }
 
@@ -182,6 +182,11 @@ export function createPromptLintServer(): http.Server {
           optimizedModel: body.optimizedModel || "gpt-4o-mini",
           monthlyVolume: body.monthlyVolume ? Number(body.monthlyVolume) : 100_000
         });
+        for (const run of [benchmark.original, benchmark.optimized]) {
+          if (!run.simulated && !run.idempotentReplayed) {
+            telemetryStore.recordGatewayUsage(run.inputTokens, run.cachedTokens);
+          }
+        }
         return sendJson(res, 200, benchmark);
       }
 

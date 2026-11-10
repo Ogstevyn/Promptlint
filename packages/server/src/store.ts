@@ -225,6 +225,8 @@ class TelemetryStore {
       headBranch: "feat/claude-pii-guard"
     });
     report2.id = "pr-39";
+    report1.demoSeed = true;
+    report2.demoSeed = true;
 
     this.prReports = [report1, report2];
   }
@@ -236,8 +238,22 @@ class TelemetryStore {
     }
   }
 
-  public recordOptimization() {
+  // Measured values from this server's own runs (live Otari calls only)
+  private measuredTokenReductions: number[] = [];
+  private measuredInputTokens = 0;
+  private measuredCachedTokens = 0;
+
+  public recordOptimization(tokenReductionPct?: number) {
     this.totalPromptsOptimized += 1;
+    if (typeof tokenReductionPct === "number" && Number.isFinite(tokenReductionPct)) {
+      this.measuredTokenReductions.push(tokenReductionPct);
+    }
+  }
+
+  /** Record cache usage from a live (non-simulated) gateway call */
+  public recordGatewayUsage(inputTokens: number, cachedTokens: number) {
+    this.measuredInputTokens += inputTokens;
+    this.measuredCachedTokens += cachedTokens;
   }
 
   public addPRReport(report: PRCostReport): PRCostReport {
@@ -274,12 +290,25 @@ class TelemetryStore {
       totalPromptsOptimized: this.totalPromptsOptimized,
       totalMonthlySavingsUsd: Number(totalMonthlySavings.toFixed(2)),
       totalAnnualSavingsUsd: Number((totalMonthlySavings * 12).toFixed(2)),
-      averageTokenReductionPct: 34.8,
-      averageOtariCacheHitRatePct: 76.4,
+      // Seed values are shown only until this server has measured real ones
+      averageTokenReductionPct:
+        this.measuredTokenReductions.length > 0
+          ? Math.round(
+              (this.measuredTokenReductions.reduce((a, b) => a + b, 0) /
+                this.measuredTokenReductions.length) *
+                10
+            ) / 10
+          : 34.8,
+      averageOtariCacheHitRatePct:
+        this.measuredInputTokens > 0
+          ? Math.round((this.measuredCachedTokens / this.measuredInputTokens) * 1000) / 10
+          : 76.4,
       securityInjectionsBlocked:
         this.ruleCounts.PL001 + this.ruleCounts.PL002,
       ruleDistribution,
-      recentPRReports: this.prReports.slice(0, 10)
+      recentPRReports: this.prReports.slice(0, 10),
+      // Scan/rule counters start from illustrative seed values for the demo
+      demoSeed: true
     };
   }
 

@@ -1,3 +1,4 @@
+import { getEncoding } from "js-tiktoken";
 import { getModelPricing } from "@promptlint/shared";
 
 export const VERBOSE_FILLER_PATTERNS: Array<{ pattern: RegExp; replacement: string; reason: string }> = [
@@ -43,13 +44,39 @@ export const VERBOSE_FILLER_PATTERNS: Array<{ pattern: RegExp; replacement: stri
   }
 ];
 
-export function estimateTokens(text: string): number {
-  if (!text || !text.trim()) return 0;
-  // Standard BPE approximation (~3.8 chars per token + punctuation weighting)
+type Encoder = { encode: (text: string) => number[] };
+let cachedEncoder: Encoder | null | undefined;
+
+function getEncoder(): Encoder | null {
+  if (cachedEncoder !== undefined) return cachedEncoder;
+  try {
+    // o200k_base is the BPE vocabulary used by gpt-4o / gpt-4o-mini
+    cachedEncoder = getEncoding("o200k_base");
+  } catch {
+    cachedEncoder = null;
+  }
+  return cachedEncoder;
+}
+
+/** Rough chars/words approximation, used only if the BPE encoder cannot be loaded. */
+export function heuristicTokenEstimate(text: string): number {
   const words = text.trim().split(/\s+/).length;
   const charEstimate = Math.ceil(text.length / 3.8);
   const wordEstimate = Math.ceil(words * 1.35);
   return Math.max(1, Math.round((charEstimate + wordEstimate) / 2));
+}
+
+export function estimateTokens(text: string): number {
+  if (!text || !text.trim()) return 0;
+  const encoder = getEncoder();
+  if (encoder) {
+    try {
+      return encoder.encode(text).length;
+    } catch {
+      // fall through to heuristic
+    }
+  }
+  return heuristicTokenEstimate(text);
 }
 
 export function detectVerboseFiller(promptText: string): {

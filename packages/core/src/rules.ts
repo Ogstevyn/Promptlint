@@ -166,7 +166,7 @@ export function evaluatePromptRules(
       endLine: prompt.endLine,
       snippet: prompt.rawCode.slice(0, 150),
       suggestedFix:
-        "Configure `baseURL: process.env.OTARI_BASE_URL || 'https://api.otari.ai/api/v1'` and pass `Otari-Key: Bearer ${process.env.OTARI_API_KEY}`."
+        "Configure `baseURL: process.env.OTARI_BASE_URL || 'https://eu.api.otari.ai/api/v1'` and pass the `Otari-Key: ${process.env.OTARI_API_KEY}` header."
     });
   }
 

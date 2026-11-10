@@ -198,13 +198,27 @@ async function runOptimizeCommand(args: string[]) {
     targetModel
   });
 
+  const t = result.otariTelemetry;
+  const tokenDelta = result.tokenReductionPercentage;
   console.log(`${COLORS.bold}Mozilla Otari Telemetry:${COLORS.reset}`);
+  console.log(
+    `  Mode:                ${
+      t.simulated
+        ? `${COLORS.yellow}SIMULATED${COLORS.reset} (set OTARI_API_KEY for live gateway calls)`
+        : `${COLORS.green}LIVE${COLORS.reset} via Otari`
+    }`
+  );
+  console.log(`  Optimizer:           ${result.optimizerSource === "llm" ? "LLM rewrite (validated)" : "rule-based rewrite"}`);
   console.log(`  Endpoint:            ${result.otariTelemetry.otariEndpoint}`);
   console.log(`  Otari-Request-ID:    ${result.otariTelemetry.otariRequestId}`);
   console.log(`  Idempotency-Key:     ${result.otariTelemetry.idempotencyKey.slice(0, 24)}...`);
   console.log(`  Idempotent Replayed: ${result.otariTelemetry.idempotentReplayed}`);
   console.log(`  Cache Control:       ephemeral (enabled)`);
-  console.log(`  Token Reduction:     ${result.originalTokens} -> ${result.optimizedTokens} tokens (-${result.tokenReductionPercentage}%)`);
+  console.log(
+    `  Prompt Tokens:       ${result.originalTokens} -> ${result.optimizedTokens} (${
+      tokenDelta >= 0 ? `-${tokenDelta}%` : `+${Math.abs(tokenDelta)}%, security guards added`
+    })`
+  );
   console.log(`  Monthly Savings:     -$${result.costBreakdown.monthlySavingsUsd.toFixed(2)}/mo (-${result.costBreakdown.savingsPercentage}%)\n`);
 
   console.log(`${COLORS.bold}Optimizations Applied:${COLORS.reset}`);
@@ -227,8 +241,10 @@ async function runCiReportCommand(args: string[]) {
   const target = args.find((a) => !a.startsWith("--")) || "./examples/vulnerable-app";
   const outputFile = getFlagValue(args, "--output");
   const isJson = args.includes("--json");
+  const volumeStr = getFlagValue(args, "--volume");
+  const monthlyVolume = volumeStr ? parseInt(volumeStr, 10) : 100_000;
 
-  const summary = scanRepositoryPath(target);
+  const summary = scanRepositoryPath(target, { monthlyCallVolume: monthlyVolume });
   const prReport = buildPRCostReport(summary);
   const markdown = generatePRMarkdownReport(summary);
 
@@ -242,7 +258,8 @@ async function runCiReportCommand(args: string[]) {
     console.log(markdown);
   }
 
-  if (args.includes("--post-pr") || process.env.GITHUB_ACTIONS === "true") {
+  // Post only when explicitly asked, so the Action's post-pr-comment: false is respected
+  if (args.includes("--post-pr")) {
     const posted = await postGitHubPRComment(markdown);
     if (posted) {
       console.error("Posted PromptLint x Mozilla Otari cost report to GitHub PR.");
@@ -273,7 +290,7 @@ async function main() {
       console.log("Commands:");
       console.log("  promptlint scan [dir|file] [--volume 100000] [--json]");
       console.log("  promptlint optimize <file> [--write] [--model gpt-4o-mini]");
-      console.log("  promptlint ci-report [dir|file] [--output report.md] [--post-pr]");
+      console.log("  promptlint ci-report [dir|file] [--output report.md] [--volume 100000] [--post-pr]");
       break;
   }
 }
