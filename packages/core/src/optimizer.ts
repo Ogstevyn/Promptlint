@@ -300,8 +300,8 @@ export async function optimizePromptAndCode(
 export async function benchmarkPromptsViaOtari(
   req: BenchmarkRequest
 ): Promise<BenchmarkResponse> {
-  const originalModel = req.originalModel || "gpt-4o";
-  const optimizedModel = req.optimizedModel || "gpt-4o-mini";
+  const originalModel = req.originalModel || "mistral/mistral-large-2411";
+  const optimizedModel = req.optimizedModel || "alibaba/qwen-3.5-35b-a3b";
   const monthlyVolume = req.monthlyVolume || 100_000;
 
   const client = new OtariGatewayClient();
