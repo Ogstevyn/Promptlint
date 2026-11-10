@@ -62,6 +62,8 @@ export interface OtariChatResponse {
   otariAttemptId: string;
   idempotentReplayed: boolean;
   idempotencyKey: string;
+  /** true when no live Otari call was made (no API key, or the gateway was unreachable) */
+  simulated: boolean;
 }
 
 interface CachedOtariEntry {
@@ -89,7 +91,9 @@ export class OtariGatewayClient {
       process.env.OTARI_BASE_URL ||
       "https://eu.api.otari.ai/api/v1"
     ).replace(/\/+$/, "");
-    const rawKey = options?.apiKey ?? process.env.OTARI_API_KEY;
+    // PROMPTLINT_OFFLINE=1 forces the offline simulator (used by the test suites)
+    const offline = process.env.PROMPTLINT_OFFLINE === "1" && options?.apiKey === undefined;
+    const rawKey = offline ? undefined : options?.apiKey ?? process.env.OTARI_API_KEY;
     this.apiKey =
       rawKey &&
       rawKey !== "otari_your_api_key_here" &&
@@ -166,9 +170,11 @@ export class OtariGatewayClient {
           const inputTokens =
             data.usage?.prompt_tokens ||
             estimateTokens(JSON.stringify(req.messages));
+          // Only report cached tokens the gateway actually returned (OpenAI- or Anthropic-style usage)
           const cachedTokens =
-            data.usage?.prompt_tokens_details?.cached_tokens ||
-            Math.round(inputTokens * 0.6);
+            data.usage?.prompt_tokens_details?.cached_tokens ??
+            data.usage?.cache_read_input_tokens ??
+            0;
           const outputTokens =
             data.usage?.completion_tokens || estimateTokens(content);
 
@@ -184,7 +190,8 @@ export class OtariGatewayClient {
             otariRequestId,
             otariAttemptId,
             idempotentReplayed,
-            idempotencyKey
+            idempotencyKey,
+            simulated: false
           };
 
           idempotencyMemoryCache.set(idempotencyKey, {
@@ -226,12 +233,14 @@ export class OtariGatewayClient {
       cachedTokens,
       outputTokens,
       latencyMs: simulatedLatency,
-      routedViaOtari: true,
+      // Nothing was sent to the gateway: report that honestly
+      routedViaOtari: false,
       otariEndpoint: endpoint,
       otariRequestId: `otari_req_${idempotencyKey.slice(0, 12)}`,
       otariAttemptId: `otari_att_${idempotencyKey.slice(12, 20)}`,
       idempotentReplayed: false,
-      idempotencyKey
+      idempotencyKey,
+      simulated: true
     };
 
     idempotencyMemoryCache.set(idempotencyKey, {

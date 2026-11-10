@@ -1,5 +1,8 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+
+// Keep tests deterministic even when a real OTARI_API_KEY is in .env
+process.env.PROMPTLINT_OFFLINE = "1";
 import http from "node:http";
 import { createPromptLintServer } from "../app";
 
@@ -43,6 +46,7 @@ describe("@promptlint/server REST API contract for Frontend", () => {
     const stats = (await statsRes.json()) as any;
     assert.ok(stats.totalMonthlySavingsUsd > 0);
     assert.equal(stats.ruleDistribution.length, 8);
+    assert.equal(stats.demoSeed, true);
   });
 
   it("POST /api/v1/lint and POST /api/v1/optimize process code and return savings & rewrites", async () => {
@@ -71,6 +75,8 @@ export const run = (q: string) => client.chat.completions.create({
     assert.equal(optRes.status, 200);
     const optData = (await optRes.json()) as any;
     assert.ok(optData.optimizedCode.includes("Otari-Key"));
-    assert.ok(optData.otariTelemetry.routedViaOtari);
+    assert.equal(optData.otariTelemetry.simulated, true);
+    assert.equal(optData.otariTelemetry.routedViaOtari, false);
+    assert.equal(optData.optimizerSource, "rules");
   });
 });
