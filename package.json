@@ -13,6 +13,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "dev:server": "npm --workspace=@promptlint/server run dev",
+    "dev:web": "npm --workspace=@promptlint/web run dev",
     "start:server": "npm --workspace=@promptlint/server run start",
     "scan": "node packages/cli/dist/cli.js scan",
     "optimize": "node packages/cli/dist/cli.js optimize",

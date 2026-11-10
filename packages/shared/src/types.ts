@@ -257,3 +257,24 @@ export interface DashboardStats {
   /** true when headline KPIs include illustrative pre-seeded demo figures */
   demoSeed?: boolean;
 }
+
+/** Curated vulnerable code sample served by GET /api/v1/presets */
+export interface DemoPreset {
+  id: string;
+  title: string;
+  description: string;
+  language: "typescript" | "python" | "raw-prompt";
+  filename: string;
+  code: string;
+  sampleTestInput: string;
+}
+
+/** Body for POST /api/v1/reports (scans a path on the server and records a PR report) */
+export interface CreatePRReportRequest {
+  targetPath?: string;
+  prNumber?: number;
+  prTitle?: string;
+  author?: string;
+  baseBranch?: string;
+  headBranch?: string;
+}

@@ -81,6 +81,12 @@ cp .env.example .env
 npm run dev:server
 ```
 
+### 6. Start the Web UI
+```bash
+npm run dev:web
+```
+Opens the Playground, Benchmark, PR Reports and Dashboard at `http://localhost:5173`. It talks to the API at `VITE_API_URL` (default `http://localhost:4000`). Results that came from the offline simulator rather than a live Otari call are badged **SIMULATED**.
+
 ---
 
 ## GitHub Action Usage
