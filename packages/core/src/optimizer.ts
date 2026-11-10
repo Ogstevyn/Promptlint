@@ -31,7 +31,7 @@ function optimizerReasoningEffort(): ReasoningEffort | undefined {
 const OPTIMIZER_SYSTEM_PROMPT = `You are a prompt-compression engine. Rewrite the prompt you are given so it uses as few tokens as possible while keeping its exact task, output format and constraints.
 Rules:
 - All instructions come first, as plain text.
-- After the instructions, end with the input section: every <user_input>...</user_input> block copied exactly as written (placeholder included), each with at most a short label such as "Message:". No instructions after or between the blocks.
+- After the instructions, end with the input section: every <user_input>...</user_input> block copied exactly as written (placeholder included), each with at most a short label such as "Message:" placed outside the tags. Keep every block separate and byte-for-byte unchanged: never merge blocks, put labels or other text inside the tags, or drop one. No instructions after or between the blocks.
 - Do not add new instructions, security notes or change the requested output schema. A security directive is appended automatically.
 Respond with JSON only, no markdown: {"optimizedPrompt": string, "changes": string[]}`;
 

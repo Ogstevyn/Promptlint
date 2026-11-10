@@ -24,7 +24,7 @@ Engineering teams write LLM prompts ad-hoc across application code. Before those
 | `PL002` | `security` | `warning` | Missing instruction hierarchy boundary when handling untrusted input. | Adds explicit system directive to ignore instructions inside `<user_input>`. |
 | `PL003` | `caching` | `warning` | Dynamic variables placed before static prefix or missing `cache_control: { type: "ephemeral" }`. | Moves static context to the top message block with `cache_control: { type: "ephemeral" }`. |
 | `PL004` | `cost` | `info` | Verbose conversational filler inflating input token count on every request. | Compresses prompt phrasing while preserving exact output schema. |
-| `PL005` | `cost` | `warning` | Frontier model (`gpt-4o`, `claude-3-5-sonnet`) used for low-complexity classification/extraction. | Routes via Mozilla Otari to `gpt-4o-mini` or `claude-3-5-haiku` (up to 90% savings). |
+| `PL005` | `cost` | `warning` | Frontier model (`gpt-4o`, `claude-3-5-sonnet`, `mistral-large`) used for low-complexity classification/extraction. | Routes via Mozilla Otari to the model's cheaper tier (`gpt-4o-mini`, `claude-3-5-haiku`, `ministral-8b`). |
 | `PL006` | `latency` | `warning` | Missing `max_tokens` / `max_completion_tokens` ceiling. | Adds an explicit `max_tokens` bound. |
 | `PL007` | `otari-routing` | `error` | Direct vendor SDK initialization bypassing Mozilla Otari Gateway. | Configures `baseURL: process.env.OTARI_BASE_URL` and `Otari-Key` header. |
 | `PL008` | `caching` | `info` | Missing deterministic `Idempotency-Key` request header. | Injects SHA-256 `Idempotency-Key` header to leverage `Otari-Idempotent-Replayed: true`. |
@@ -81,7 +81,17 @@ cp .env.example .env
 npm run dev:server
 ```
 
-### 6. Start the Web UI
+### 6. Live vs. Simulated
+
+With `OTARI_API_KEY` set in `.env`, optimize and benchmark calls go live to `https://eu.api.otari.ai/api/v1`:
+
+- **Optimizer:** `alibaba/qwen-3.5-35b-a3b` (override with `OTARI_OPTIMIZER_MODEL`) compresses the hardened prompt. Its rewrite is used only if it keeps every `<user_input>` guard, puts inputs last and is shorter; otherwise the rule-based rewrite is used, and `optimizerSource` says which.
+- **Benchmark:** compares `mistralai/mistral-large-latest` with `mistralai/ministral-8b-latest` by default (override with `OTARI_BENCHMARK_ORIGINAL_MODEL` / `OTARI_BENCHMARK_OPTIMIZED_MODEL`). Cost comes from Otari's reported `usage.cost_usd` when available (`costSource: "gateway"`), otherwise from the pricing catalog. Output agreement is computed from the two responses.
+- **Idempotent replay:** re-running an identical request sends the same `Idempotency-Key`. Otari returns `Otari-Idempotent-Replayed: true` with the real latency.
+
+Without a key (or with `PROMPTLINT_OFFLINE=1`, which the tests use), a deterministic simulator answers instead, and every result is flagged `simulated: true`. A failed live call also falls back to the simulator and reports `gatewayError`. Token counts use the `o200k_base` BPE tokenizer.
+
+### 7. Start the Web UI
 ```bash
 npm run dev:web
 ```

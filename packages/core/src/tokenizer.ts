@@ -28,7 +28,7 @@ export const VERBOSE_FILLER_PATTERNS: Array<{ pattern: RegExp; replacement: stri
     reason: "Redundant emphasis phrasing"
   },
   {
-    pattern: /\bthank\s+you\s+so\s+much\s+in\s+advance\s+for\s+your\s+help!?\b/gi,
+    pattern: /\bthank\s+you\s+so\s+much\s+in\s+advance\s+for\s+your\s+help\b!?/gi,
     replacement: "",
     reason: "Closing pleasantry wastes tokens on every API call"
   },
@@ -100,6 +100,13 @@ export function detectVerboseFiller(promptText: string): {
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+  // Removing a lead-in such as "Please could you kindly" leaves sentences starting lowercase
+  if (matches.length > 0) {
+    compressed = compressed.replace(
+      /(^|[.!?]\s+|\n\s*)([a-z])/g,
+      (_m, lead: string, ch: string) => lead + ch.toUpperCase()
+    );
+  }
 
   const originalTokens = estimateTokens(promptText);
   const newTokens = estimateTokens(compressed);

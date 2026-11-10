@@ -7,6 +7,7 @@ process.env.PROMPTLINT_OFFLINE = "1";
 import {
   benchmarkPromptsViaOtari,
   computeOutputAgreement,
+  detectVerboseFiller,
   estimateTokens,
   generatePRMarkdownReport,
   parseOptimizerReply,
@@ -75,6 +76,13 @@ export async function classifyTicket(userInput: string) {
   it("counts tokens with the o200k_base BPE vocabulary", () => {
     assert.equal(estimateTokens("hello world"), 2);
     assert.equal(estimateTokens(""), 0);
+  });
+
+  it("strips filler cleanly, without stray punctuation or lowercase sentence starts", () => {
+    const { compressedText } = detectVerboseFiller(
+      "Please could you kindly read the ticket. Thank you so much in advance for your help!"
+    );
+    assert.equal(compressedText, "Read the ticket.");
   });
 
   it("accepts an LLM rewrite only when it keeps guards and is shorter", () => {

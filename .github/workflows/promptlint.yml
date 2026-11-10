@@ -35,7 +35,7 @@ jobs:
       - name: Generate Mozilla Otari PR Cost Report
         env:
           OTARI_API_KEY: ${{ secrets.OTARI_API_KEY }}
-          OTARI_BASE_URL: ${{ vars.OTARI_BASE_URL || 'https://api.otari.ai/api/v1' }}
+          OTARI_BASE_URL: ${{ vars.OTARI_BASE_URL || 'https://eu.api.otari.ai/api/v1' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}

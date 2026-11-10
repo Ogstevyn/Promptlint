@@ -69,7 +69,7 @@ export const LINT_RULES_CATALOG: Record<RuleId, LintRuleMetadata> = {
     description:
       "LLM SDK initializes directly against an upstream provider instead of routing through the Mozilla Otari LLM Gateway.",
     remediation:
-      "Configure `baseURL: process.env.OTARI_BASE_URL || 'https://api.otari.ai/api/v1'` and authenticate with the `Otari-Key` header for unified cost governance and failover."
+      "Configure `baseURL: process.env.OTARI_BASE_URL || 'https://eu.api.otari.ai/api/v1'` and authenticate with the `Otari-Key` header for unified cost governance and failover."
   },
   PL008: {
     id: "PL008",

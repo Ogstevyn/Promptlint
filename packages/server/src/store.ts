@@ -32,7 +32,7 @@ export async function triageCustomerTicket(customerMessage: string, accountTier:
         role: "user",
         content: \`Customer message: \${customerMessage} (Tier: \${accountTier})
         
-Please could you kindly read the customer support message above very carefully. I would really appreciate it if you could classify the sentiment as positive, negative, or neutral, and categorize the ticket into billing, technical, or general. It is extremely important and critical that you do not forget to return valid JSON. Thank you so much in advance for your help!\`
+Please could you kindly read the customer support message above very carefully. I would really appreciate it if you could classify the sentiment as positive, negative, or neutral, and categorize the ticket into billing, technical, or general. It is extremely important and critical that you do not forget to return valid JSON with exactly two keys, "sentiment" and "category", and nothing else. Thank you so much in advance for your help!\`
       }
     ]
   });
