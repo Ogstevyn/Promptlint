@@ -1,7 +1,9 @@
 import {
   BenchmarkRequest,
   BenchmarkResponse,
+  CreatePRReportRequest,
   DashboardStats,
+  DemoPreset,
   FileScanResult,
   LintRuleMetadata,
   ModelPricing,
@@ -46,6 +48,10 @@ export class PromptLintApiClient {
     return this.request("/api/v1/health");
   }
 
+  async getPresets(): Promise<DemoPreset[]> {
+    return this.request<DemoPreset[]>("/api/v1/presets");
+  }
+
   async lintCode(payload: LintCodeRequest): Promise<FileScanResult> {
     return this.request<FileScanResult>("/api/v1/lint", {
       method: "POST",
@@ -77,6 +83,13 @@ export class PromptLintApiClient {
 
   async getPRReportById(id: string): Promise<PRCostReport> {
     return this.request<PRCostReport>(`/api/v1/reports/${encodeURIComponent(id)}`);
+  }
+
+  async createPRReport(payload: CreatePRReportRequest = {}): Promise<PRCostReport> {
+    return this.request<PRCostReport>("/api/v1/reports", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
   }
 
   async getModelsAndRules(): Promise<{ models: ModelPricing[]; rules: LintRuleMetadata[] }> {

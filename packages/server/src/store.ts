@@ -1,20 +1,11 @@
 import {
   DashboardStats,
+  DemoPreset,
   LINT_RULES_CATALOG,
   PRCostReport,
   RuleId
 } from "@promptlint/shared";
 import { buildPRCostReport, scanCodeString, scanRepositoryPath } from "@promptlint/core";
-
-export interface DemoPreset {
-  id: string;
-  title: string;
-  description: string;
-  language: "typescript" | "python" | "raw-prompt";
-  filename: string;
-  code: string;
-  sampleTestInput: string;
-}
 
 export const DEMO_PRESETS: DemoPreset[] = [
   {

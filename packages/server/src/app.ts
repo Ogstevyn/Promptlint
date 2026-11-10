@@ -1,4 +1,5 @@
 import http from "http";
+import path from "path";
 import {
   LINT_RULES_CATALOG,
   MODEL_PRICING_CATALOG
@@ -10,6 +11,10 @@ import {
   scanCodeString
 } from "@promptlint/core";
 import { DEMO_PRESETS, telemetryStore } from "./store";
+
+// Resolve from the repo root (dist/app.js -> packages/server/dist), not the process cwd,
+// which is packages/server under `npm run dev:server`.
+const DEFAULT_SCAN_TARGET = path.resolve(__dirname, "../../../examples/vulnerable-app");
 
 function setCorsHeaders(res: http.ServerResponse) {
   res.setHeader("Access-Control-Allow-Origin", process.env.CORS_ORIGIN || "*");
@@ -120,7 +125,7 @@ export function createPromptLintServer(): http.Server {
       // 7. Create/Trigger a PR Cost Report
       if (req.method === "POST" && pathname === "/api/v1/reports") {
         const body = await readJsonBody(req);
-        const targetPath = body.targetPath || "./examples/vulnerable-app";
+        const targetPath = body.targetPath || DEFAULT_SCAN_TARGET;
         const report = telemetryStore.createPRReportFromPath(targetPath, {
           prNumber: body.prNumber,
           prTitle: body.prTitle,
