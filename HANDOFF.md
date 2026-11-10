@@ -1,6 +1,6 @@
 # Frontend Handoff Guide (`@promptlint/web`)
 
-Welcome! The entire **Backend, Static/Semantic Linter Engine, Mozilla Otari Gateway Client, CLI, and GitHub CI Action** are complete, tested, and ready for you to build the frontend inside `packages/web`.
+The **Backend, Linter Engine, Mozilla Otari Gateway Client, CLI, GitHub CI Action and the web UI (`packages/web`: Playground, Benchmark, PR Reports, Dashboard)** are built and tested. This guide documents the REST contract the web UI uses. Run it with `npm run dev:server` and `npm run dev:web`.
 
 ---
 
@@ -18,7 +18,8 @@ npm run dev:server
 ```
 
 - The backend server runs at **`http://localhost:4000`** with CORS enabled (`*`).
-- It works **100% out-of-the-box** (even before `OTARI_API_KEY` is added to `.env`, it has a deterministic simulation & local idempotency cache fallback, and is pre-seeded with realistic PR Cost Reports and Demo Presets!).
+- It works without a key: if `OTARI_API_KEY` is missing (or `PROMPTLINT_OFFLINE=1`), every Otari call falls back to a deterministic simulator and the response says so (`simulated: true`). With a key in `.env`, calls go live to `https://eu.api.otari.ai/api/v1`. If a live call fails, the response carries `gatewayError` and the simulator's output, still marked `simulated: true`.
+- PR reports and dashboard KPIs are seeded demo data and are flagged `demoSeed: true`. Dashboard averages switch to measured values once real optimize or benchmark runs have been recorded.
 
 ---
 
@@ -54,7 +55,7 @@ Returns server status and whether a live `OTARI_API_KEY` is configured.
   "service": "@promptlint/server",
   "version": "1.0.0",
   "otariConfigured": false,
-  "otariBaseUrl": "https://api.otari.ai/api/v1"
+  "otariBaseUrl": "https://eu.api.otari.ai/api/v1"
 }
 ```
 
@@ -106,31 +107,33 @@ Rewrites the user's code and prompt to fix all detected lint issues and route tr
   - `originalPrompt` / `optimizedPrompt`: Prompt text before & after
   - `originalTokens` / `optimizedTokens` / `tokenReductionPercentage`
   - `diagnosticsFixed`: `["PL001", "PL002", "PL003", ...]`
-  - `otariTelemetry`: `{ routedViaOtari, otariEndpoint, otariRequestId, otariAttemptId, idempotentReplayed, idempotencyKey, cacheControlApplied, latencyMs }`
-  - `explanation`: `string[]` (bullet points of every optimization applied)
+  - `otariTelemetry`: `{ routedViaOtari, otariEndpoint, otariRequestId, otariAttemptId, idempotentReplayed, idempotencyKey, cacheControlApplied, latencyMs, simulated, gatewayError? }`
+  - `optimizerSource`: `"llm"` when the Otari optimizer model (`OTARI_OPTIMIZER_MODEL`, default `alibaba/qwen-3.5-35b-a3b`) produced a rewrite that passed validation (guards kept, inputs last, shorter); `"rules"` otherwise
+  - `tokenReductionPercentage` can be negative: adding `<user_input>` guards and the security boundary can make a short prompt longer
+  - `explanation`: `string[]` (bullet points of every optimization applied, including why an LLM rewrite was discarded)
 
 ### 3.5 `POST /api/v1/benchmark`
 Executes a side-by-side comparison of the Original Prompt/Model vs. Optimized Prompt/Model routed through **Mozilla Otari Gateway**.
-> **Cool Demo Trick:** If the user clicks **"Run Benchmark"** twice in a row with the same input, the second call automatically hits the **Otari Idempotency Cache** and returns `"idempotentReplayed": true` with `latencyMs: 12`! Highlight this visually in the UI!
+> **Demo:** Running the same benchmark twice sends the same `Idempotency-Key`. Otari replays the stored response and reports `Otari-Idempotent-Replayed: true`, which comes back as `idempotentReplayed: true` with the real measured latency. Offline, the local simulator emulates this.
 - **Request Body:**
 ```json
 {
   "originalPrompt": "string",
   "optimizedPrompt": "string",
   "testInput": "string",
-  "originalModel": "gpt-4o",
-  "optimizedModel": "gpt-4o-mini",
+  "originalModel": "mistralai/mistral-large-latest",
+  "optimizedModel": "mistralai/ministral-8b-latest",
   "monthlyVolume": 100000
 }
 ```
+- Both model fields are optional. They default to `OTARI_BENCHMARK_ORIGINAL_MODEL` / `OTARI_BENCHMARK_OPTIMIZED_MODEL`, then to the Mistral pair above (OpenAI models are not enabled on every Otari org).
 - **Response (`BenchmarkResponse`):**
-  - `original`: `{ model, outputText, inputTokens, cachedTokens, outputTokens, latencyMs, costPer1kCallsUsd, monthlyProjectedCostUsd, otariRequestId, idempotentReplayed }`
-  - `optimized`: `{ model, outputText, inputTokens, cachedTokens, outputTokens, latencyMs, costPer1kCallsUsd, monthlyProjectedCostUsd, otariRequestId, idempotentReplayed }`
-  - `comparison`: `{ latencyReductionMs, latencyReductionPercentage, tokenReductionPercentage, costReductionPercentage, monthlySavingsUsd, semanticEquivalenceScore }`
+  - `original` / `optimized`: `{ model, outputText, inputTokens, cachedTokens, outputTokens, latencyMs, costPer1kCallsUsd, monthlyProjectedCostUsd, otariRequestId, idempotentReplayed, simulated, gatewayError?, gatewayCostUsd?, costSource }`. `costSource` is `"gateway"` when Otari reported the real call cost (`usage.cost_usd`) and `"catalog"` when it was computed from the pricing table.
+  - `comparison`: `{ latencyReductionMs, latencyReductionPercentage, tokenReductionPercentage, costReductionPercentage, monthlySavingsUsd, semanticEquivalenceScore }`. `semanticEquivalenceScore` is computed from the two outputs (matching JSON keys, or word overlap for free text) and is `null` when either side was simulated.
 
 ### 3.6 `GET /api/v1/stats`
 Returns aggregated dashboard KPIs and chart data (`DashboardStats`):
-- `totalScansRun`, `totalPromptsOptimized`, `totalMonthlySavingsUsd`, `totalAnnualSavingsUsd`, `averageTokenReductionPct`, `averageOtariCacheHitRatePct`, `securityInjectionsBlocked`
+- `totalScansRun`, `totalPromptsOptimized`, `totalMonthlySavingsUsd`, `totalAnnualSavingsUsd`, `averageTokenReductionPct`, `averageOtariCacheHitRatePct`, `securityInjectionsBlocked`, `demoSeed`
 - `ruleDistribution`: Array of `{ ruleId, ruleName, category, count }`
 - `recentPRReports`: Array of `PRCostReport`
 
@@ -142,9 +145,9 @@ Returns `{ models: ModelPricing[], rules: LintRuleMetadata[] }` for displaying a
 
 ---
 
-## 4. What to Build in `packages/web` (Recommended UI Architecture)
+## 4. Web UI (`packages/web`, Vite + React)
 
-Build a sleek, developer-focused dark-mode application (Next.js App Router or Vite + React + Tailwind CSS + Lucide Icons) in `packages/web` with **4 main tabs/views**:
+The original spec for the 4 tabs is below. They are built. Wherever this spec conflicts with the honesty fields above (`simulated`, `costSource`, `demoSeed`, nullable agreement), the UI follows the fields.
 
 ### Tab 1: Interactive Linter & Mozilla Otari Optimizer Playground (Hero View)
 1. **Top Bar:**
@@ -170,11 +173,11 @@ Build a sleek, developer-focused dark-mode application (Next.js App Router or Vi
   - Latency (`ms` + % faster badge)
   - Input Tokens vs. Cached Tokens (`cachedTokens` badge)
   - Cost per 1k calls & Monthly Projected Cost
-  - **`Otari-Idempotent-Replayed` Badge**: Add a button **"Re-run Identical Request (Test Otari Idempotency Cache)"** that fires the same request again and highlights that `idempotentReplayed: true` returned in `12ms` at `$0.00` cost!
+  - **`Otari-Idempotent-Replayed` Badge**: a **"Re-run identical request"** button fires the same request again and highlights `idempotentReplayed: true` with the measured latency.
 
 ### Tab 3: GitHub CI Pull Request Cost Reports
 - Fetches `GET /api/v1/reports`.
-- Shows a list of PRs (e.g., `PR #42: feat(triage): add GPT-4o customer support ticket classifier & RAG bot`, `PR #39: chore(ci): integrate Claude 3.5 Sonnet diff PII scanner`).
+- Shows a list of PRs (seeded examples are labelled as demo data).
 - Clicking a PR displays the rendered GitHub PR comment table, health score badge, and file-by-file diagnostics.
 - Include a **"Simulate New CI Scan"** button (`POST /api/v1/reports`) that scans `./examples/vulnerable-app` and adds a new PR report live.
 
@@ -182,8 +185,8 @@ Build a sleek, developer-focused dark-mode application (Next.js App Router or Vi
 - Fetches `GET /api/v1/stats` and `GET /api/v1/models`.
 - Displays 4 KPI hero cards:
   - **Total Projected Annual Savings** (`$XX,XXX/yr`)
-  - **Average Token Reduction** (`34.8%`)
-  - **Otari Cache Hit Rate** (`76.4%`)
+  - **Average Token Reduction** (seed `34.8%` until real optimizations are recorded)
+  - **Otari Cache Hit Rate** (seed `76.4%` until real gateway usage is recorded)
   - **Prompt Injections Blocked** (`PL001` + `PL002` count)
 - Displays the **8 Lint Rules Catalog (`PL001`–`PL008`)** and **Mozilla Otari Supported Model Pricing Table**.
 

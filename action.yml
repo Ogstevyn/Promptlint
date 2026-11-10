@@ -20,7 +20,7 @@ inputs:
   otari-base-url:
     description: "Mozilla Otari Gateway Base URL"
     required: false
-    default: "https://api.otari.ai/api/v1"
+    default: "https://eu.api.otari.ai/api/v1"
   post-pr-comment:
     description: "Automatically post the Markdown cost & security report on the Pull Request"
     required: false
