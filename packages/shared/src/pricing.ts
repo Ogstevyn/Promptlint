@@ -189,6 +189,29 @@ export const MODEL_PRICING_CATALOG: Record<string, ModelPricing> = {
     outputPerMillionUsd: 0.4,
     avgLatencyMs: 290,
     supportsPromptCaching: true
+  },
+  // Prices from the Otari model catalog (GET /api/v1/models, pricing_source "configured"),
+  // checked 2026-11-10. Latencies are rough figures observed through the EU gateway.
+  "mistralai/mistral-large-latest": {
+    model: "mistralai/mistral-large-latest",
+    provider: "mistralai",
+    tier: "frontier",
+    inputPerMillionUsd: 0.5,
+    cachedInputPerMillionUsd: 0.05,
+    outputPerMillionUsd: 1.5,
+    avgLatencyMs: 1200,
+    supportsPromptCaching: true,
+    recommendedFallback: "mistralai/ministral-8b-latest"
+  },
+  "mistralai/ministral-8b-latest": {
+    model: "mistralai/ministral-8b-latest",
+    provider: "mistralai",
+    tier: "fast",
+    inputPerMillionUsd: 0.15,
+    cachedInputPerMillionUsd: 0.015,
+    outputPerMillionUsd: 0.15,
+    avgLatencyMs: 900,
+    supportsPromptCaching: true
   }
 };
 

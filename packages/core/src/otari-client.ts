@@ -47,6 +47,8 @@ export interface OtariChatRequest {
   temperature?: number;
   max_tokens?: number;
   idempotencyKey?: string;
+  /** Forwarded to the gateway; "none" turns off hidden reasoning on thinking models such as Qwen 3.5 */
+  reasoning_effort?: "none" | "low" | "medium" | "high";
 }
 
 export interface OtariChatResponse {
@@ -62,8 +64,12 @@ export interface OtariChatResponse {
   otariAttemptId: string;
   idempotentReplayed: boolean;
   idempotencyKey: string;
-  /** true when no live Otari call was made (no API key, or the gateway was unreachable) */
+  /** true when no live Otari call was made (no API key, or the gateway call failed) */
   simulated: boolean;
+  /** Why the live call failed and the simulator was used instead, e.g. "400 invalid_model: ..." */
+  gatewayError?: string;
+  /** Actual cost the gateway reported for this call (usage.cost_usd), when available */
+  gatewayCostUsd?: number;
 }
 
 interface CachedOtariEntry {
@@ -120,18 +126,23 @@ export class OtariGatewayClient {
         temperature: req.temperature ?? 0
       });
 
-    // Check Idempotency Cache (matches Otari's idempotency_retention_sec behavior)
-    const cached = idempotencyMemoryCache.get(idempotencyKey);
-    if (cached && Date.now() - cached.timestamp < 24 * 60 * 60 * 1000) {
-      return {
-        ...cached.response,
-        latencyMs: 12,
-        idempotentReplayed: true
-      };
+    // Offline only: emulate Otari's idempotent replay locally. With a live key the
+    // request always goes to the gateway, which replays it itself and reports
+    // Otari-Idempotent-Replayed with a real latency.
+    if (!this.apiKey) {
+      const cached = idempotencyMemoryCache.get(idempotencyKey);
+      if (cached && Date.now() - cached.timestamp < 24 * 60 * 60 * 1000) {
+        return {
+          ...cached.response,
+          latencyMs: 12, // simulated replay latency
+          idempotentReplayed: true
+        };
+      }
     }
 
     const endpoint = `${this.baseUrl}/chat/completions`;
     const startTime = Date.now();
+    let gatewayError: string | undefined;
 
     if (this.apiKey) {
       try {
@@ -146,7 +157,8 @@ export class OtariGatewayClient {
             model: req.model,
             messages: req.messages,
             temperature: req.temperature ?? 0,
-            max_tokens: req.max_tokens ?? 512
+            max_tokens: req.max_tokens ?? 512,
+            ...(req.reasoning_effort ? { reasoning_effort: req.reasoning_effort } : {})
           })
         });
 
@@ -193,16 +205,19 @@ export class OtariGatewayClient {
             idempotencyKey,
             simulated: false
           };
-
-          idempotencyMemoryCache.set(idempotencyKey, {
-            response: result,
-            timestamp: Date.now()
-          });
+          const costUsd = Number(data.usage?.cost_usd ?? data.usage?.estimated_cost);
+          if (Number.isFinite(costUsd)) result.gatewayCostUsd = costUsd;
           return result;
         }
-      } catch {
-        // Fall through to deterministic simulation if offline or unreachable
+
+        const errorBody = (await res.json().catch(() => ({}))) as any;
+        gatewayError = `${res.status}${errorBody?.code ? ` ${errorBody.code}` : ""}: ${String(
+          errorBody?.detail ?? errorBody?.error?.message ?? res.statusText
+        ).slice(0, 200)}`;
+      } catch (err) {
+        gatewayError = `gateway unreachable: ${(err as Error).message}`;
       }
+      // Fall through to the deterministic simulation, reporting why
     }
 
     // Deterministic Fallback Simulation when OTARI_API_KEY is not yet provided
@@ -240,7 +255,8 @@ export class OtariGatewayClient {
       otariAttemptId: `otari_att_${idempotencyKey.slice(12, 20)}`,
       idempotentReplayed: false,
       idempotencyKey,
-      simulated: true
+      simulated: true,
+      ...(gatewayError ? { gatewayError } : {})
     };
 
     idempotencyMemoryCache.set(idempotencyKey, {

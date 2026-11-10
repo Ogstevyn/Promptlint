@@ -204,7 +204,9 @@ async function runOptimizeCommand(args: string[]) {
   console.log(
     `  Mode:                ${
       t.simulated
-        ? `${COLORS.yellow}SIMULATED${COLORS.reset} (set OTARI_API_KEY for live gateway calls)`
+        ? `${COLORS.yellow}SIMULATED${COLORS.reset} (${
+            t.gatewayError ? `gateway call failed: ${t.gatewayError}` : "set OTARI_API_KEY for live gateway calls"
+          })`
         : `${COLORS.green}LIVE${COLORS.reset} via Otari`
     }`
   );

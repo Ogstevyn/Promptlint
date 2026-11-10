@@ -158,6 +158,8 @@ export interface OptimizeResponse {
     latencyMs: number;
     /** true when no live Otari call was made and the numbers come from the offline simulator */
     simulated: boolean;
+    /** Why the live call failed, when it fell back to the simulator */
+    gatewayError?: string;
   };
   /** "llm" when the Otari optimizer model's rewrite passed validation, "rules" for the deterministic fallback */
   optimizerSource: "llm" | "rules";
@@ -187,6 +189,12 @@ export interface BenchmarkExecutionMetrics {
   idempotentReplayed: boolean;
   /** true when this run came from the offline simulator rather than a live Otari call */
   simulated: boolean;
+  /** Why the live call failed, when it fell back to the simulator */
+  gatewayError?: string;
+  /** Actual per-call cost reported by the gateway, when available */
+  gatewayCostUsd?: number;
+  /** "gateway" when cost figures use the gateway-reported cost, "catalog" when estimated from the price table */
+  costSource: "gateway" | "catalog";
 }
 
 export interface BenchmarkResponse {
