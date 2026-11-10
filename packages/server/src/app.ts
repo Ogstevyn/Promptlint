@@ -178,8 +178,9 @@ export function createPromptLintServer(): http.Server {
           testInput:
             body.testInput ||
             "Please help me resolve duplicate invoice #INV-4092 on my enterprise account.",
-          originalModel: body.originalModel || "gpt-4o",
-          optimizedModel: body.optimizedModel || "gpt-4o-mini",
+          // Omitted models fall back to the core defaults (Otari-catalog Mistral pair)
+          originalModel: body.originalModel || undefined,
+          optimizedModel: body.optimizedModel || undefined,
           monthlyVolume: body.monthlyVolume ? Number(body.monthlyVolume) : 100_000
         });
         for (const run of [benchmark.original, benchmark.optimized]) {
