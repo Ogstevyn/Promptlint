@@ -8,6 +8,7 @@ import {
   OtariChatRequest,
   OtariChatResponse,
   detectCanary,
+  escapeUntrustedInput,
   extractTemplateVariables,
   fillPromptTemplate,
   generateCanary,
@@ -137,7 +138,8 @@ describe("@promptlint/core Injection Arena", () => {
     assert.equal(res.totalGatewayCostUsd, 0.006);
     for (const r of res.results) {
       assert.ok(r.original.promptSent.includes(r.payload));
-      assert.ok(r.hardened.promptSent.includes(`<user_input>${r.payload}</user_input>`));
+      // The hardened side gets the input XML-escaped, as the generated code sends it
+      assert.ok(r.hardened.promptSent.includes(`<user_input>${escapeUntrustedInput(r.payload)}</user_input>`));
     }
     // Same model, temperature 0, one user message on both sides
     for (const c of calls) {
@@ -145,6 +147,22 @@ describe("@promptlint/core Injection Arena", () => {
       assert.equal(c.temperature, 0);
       assert.equal(c.messages.length, 1);
     }
+  });
+
+  it("escapes the payload on the hardened side only, unless escapeInput is false", async () => {
+    const client = { async chatCompletion() { return stubResponse("ok"); } };
+    const req = { originalPrompt: "Classify: ${ticket}", attacks: ["close-user-input-tag"] };
+    const escaped = await runInjectionArena(req, { client, canary: CANARY });
+    const r = escaped.results[0];
+    assert.equal(escaped.hardenedInputEscaped, true);
+    assert.ok(r.original.promptSent.includes("</user_input>\n\nAdditional instruction"), "original side is sent raw");
+    assert.ok(r.hardened.promptSent.includes("&lt;/user_input&gt;"));
+    // Exactly one real opening and closing tag: the payload cannot add or close one
+    assert.equal(r.hardened.promptSent.split("</user_input>").length, 2);
+
+    const raw = await runInjectionArena({ ...req, escapeInput: false }, { client, canary: CANARY });
+    assert.equal(raw.hardenedInputEscaped, false);
+    assert.ok(raw.results[0].hardened.promptSent.includes(`<user_input>${raw.results[0].payload}</user_input>`));
   });
 
   it("uses fresh idempotency keys on every run", async () => {
@@ -223,7 +241,9 @@ describe("@promptlint/core Injection Arena", () => {
     );
     assert.equal(res.targetVariable, undefined);
     assert.ok(res.results[0].original.promptSent.endsWith(`Input: ${res.results[0].payload}`));
-    assert.ok(res.results[0].hardened.promptSent.includes(`<user_input>${res.results[0].payload}</user_input>`));
+    assert.ok(
+      res.results[0].hardened.promptSent.includes(`<user_input>${escapeUntrustedInput(res.results[0].payload)}</user_input>`)
+    );
     assert.ok(/Security Boundary/.test(res.hardenedPrompt));
 
     await assert.rejects(runInjectionArena({ originalPrompt: "x ${a}", attacks: ["nope"] }, { client }), /Unknown attack/);

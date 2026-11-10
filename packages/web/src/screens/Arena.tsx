@@ -471,7 +471,12 @@ function PromptsUsed({ result }: { result: InjectionArenaResponse }) {
         <Block label="Original" muted>
           {result.originalPrompt}
         </Block>
-        <Block label={`Hardened (${result.hardenedSource === "rules" ? "rule-based rewrite" : "provided"})`} muted>
+        <Block
+          label={`Hardened (${result.hardenedSource === "rules" ? "rule-based rewrite" : "provided"}${
+            result.hardenedInputEscaped ? ", input XML-escaped" : ", input not escaped"
+          })`}
+          muted
+        >
           {result.hardenedPrompt}
         </Block>
       </div>

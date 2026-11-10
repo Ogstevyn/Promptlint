@@ -7,7 +7,6 @@ import {
 import {
   OtariGatewayClient,
   benchmarkPromptsViaOtari,
-  compressAndHardenPrompt,
   listInjectionAttacks,
   optimizePromptAndCode,
   runInjectionArena,
@@ -222,11 +221,8 @@ export function createPromptLintServer(): http.Server {
           if (!extracted) {
             return sendJson(res, 422, { error: `No LLM prompt found in preset '${body.presetId}'` });
           }
+          // The hardened side is built by the core from the same template (hardenedSource "rules")
           originalPrompt = extracted.userPromptTemplate;
-          hardenedPrompt ??= compressAndHardenPrompt(
-            extracted.userPromptTemplate,
-            extracted.interpolatedVariables
-          ).optimizedPrompt;
         }
         if (!originalPrompt) {
           return sendJson(res, 400, { error: "Field `originalPrompt` (string) or a known `presetId` is required" });
@@ -241,7 +237,8 @@ export function createPromptLintServer(): http.Server {
             targetVariable: body.targetVariable || undefined,
             variableValues:
               body.variableValues && typeof body.variableValues === "object" ? body.variableValues : undefined,
-            concurrency: body.concurrency ? Number(body.concurrency) : undefined
+            concurrency: body.concurrency ? Number(body.concurrency) : undefined,
+            escapeInput: body.escapeInput === false ? false : undefined
           });
         } catch (err: any) {
           // Bad attack id, unknown target variable and the like are caller errors
