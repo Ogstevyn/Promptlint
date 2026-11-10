@@ -7,7 +7,10 @@ import {
 import {
   OtariGatewayClient,
   benchmarkPromptsViaOtari,
+  compressAndHardenPrompt,
+  listInjectionAttacks,
   optimizePromptAndCode,
+  runInjectionArena,
   scanCodeString
 } from "@promptlint/core";
 import { DEMO_PRESETS, telemetryStore } from "./store";
@@ -84,7 +87,9 @@ export function createPromptLintServer(): http.Server {
             "POST /api/v1/reports",
             "POST /api/v1/lint",
             "POST /api/v1/optimize",
-            "POST /api/v1/benchmark"
+            "POST /api/v1/benchmark",
+            "GET  /api/v1/injection-arena/attacks",
+            "POST /api/v1/injection-arena"
           ]
         });
       }
@@ -194,6 +199,55 @@ export function createPromptLintServer(): http.Server {
           }
         }
         return sendJson(res, 200, benchmark);
+      }
+
+      // 11. Injection Arena: attack corpus
+      if (req.method === "GET" && pathname === "/api/v1/injection-arena/attacks") {
+        return sendJson(res, 200, listInjectionAttacks());
+      }
+
+      // 12. Injection Arena: red-team the original vs the hardened prompt via Otari
+      if (req.method === "POST" && pathname === "/api/v1/injection-arena") {
+        const body = await readJsonBody(req);
+        let originalPrompt: string | undefined =
+          typeof body.originalPrompt === "string" && body.originalPrompt.trim() ? body.originalPrompt : undefined;
+        let hardenedPrompt: string | undefined =
+          typeof body.hardenedPrompt === "string" && body.hardenedPrompt.trim() ? body.hardenedPrompt : undefined;
+        if (!originalPrompt && body.presetId) {
+          const preset = DEMO_PRESETS.find((p) => p.id === body.presetId);
+          if (!preset) {
+            return sendJson(res, 404, { error: `Preset '${body.presetId}' not found` });
+          }
+          const extracted = scanCodeString(preset.code, preset.filename, preset.language).prompts[0];
+          if (!extracted) {
+            return sendJson(res, 422, { error: `No LLM prompt found in preset '${body.presetId}'` });
+          }
+          originalPrompt = extracted.userPromptTemplate;
+          hardenedPrompt ??= compressAndHardenPrompt(
+            extracted.userPromptTemplate,
+            extracted.interpolatedVariables
+          ).optimizedPrompt;
+        }
+        if (!originalPrompt) {
+          return sendJson(res, 400, { error: "Field `originalPrompt` (string) or a known `presetId` is required" });
+        }
+        let arena;
+        try {
+          arena = await runInjectionArena({
+            originalPrompt,
+            hardenedPrompt,
+            model: body.model || undefined,
+            attacks: Array.isArray(body.attacks) ? body.attacks : undefined,
+            targetVariable: body.targetVariable || undefined,
+            variableValues:
+              body.variableValues && typeof body.variableValues === "object" ? body.variableValues : undefined,
+            concurrency: body.concurrency ? Number(body.concurrency) : undefined
+          });
+        } catch (err: any) {
+          // Bad attack id, unknown target variable and the like are caller errors
+          return sendJson(res, 400, { error: err?.message || "Invalid injection arena request" });
+        }
+        return sendJson(res, 200, arena);
       }
 
       return sendJson(res, 404, { error: `Route ${req.method} ${pathname} not found` });

@@ -40,7 +40,7 @@ promptlint/
 ├── packages/
 │   ├── shared/                   # Shared TypeScript interfaces, pricing catalog & API client SDK
 │   ├── core/                     # Multi-language scanner, 8 lint rules, cost engine & Otari client
-│   ├── cli/                      # `promptlint` CLI (`scan`, `optimize`, `ci-report`)
+│   ├── cli/                      # `promptlint` CLI (`scan`, `optimize`, `ci-report`, `arena`)
 │   ├── server/                   # REST API Server (`http://localhost:4000`) for Web Playground
 │   └── web/                      # Frontend Web Playground & Telemetry Dashboard
 ├── examples/
@@ -74,16 +74,23 @@ node packages/cli/dist/cli.js optimize ./examples/vulnerable-app/support-triage.
 npm run ci-report -- ./examples/vulnerable-app
 ```
 
-### 5. Start the Backend API Server
+### 5. Red-team a Prompt in the Injection Arena
+```bash
+node packages/cli/dist/cli.js arena ./examples/vulnerable-app/support-triage.ts
+# --model <model>  --target <variable>  --attacks id1,id2  --json
+```
+Fires a fixed corpus of 20 prompt-injection payloads (instruction override, fake system tags, `</user_input>` escapes, role-play, base64, translated requests and more) at the original prompt and at its PromptLint-hardened version, through the same model via Otari. Each payload asks the model to print a fresh per-run canary (`PWNED-<hex>`) without spelling it out, so an attack only counts when the model actually follows it. Without `OTARI_API_KEY` the run is simulated and labelled as such. Also available as `POST /api/v1/injection-arena` and the **Injection Arena** tab in the web UI.
+
+### 6. Start the Backend API Server
 ```bash
 cp .env.example .env
 # Add your OTARI_API_KEY in .env (optional for local dev; deterministic fallback included)
 npm run dev:server
 ```
 
-### 6. Live vs. Simulated
+### 7. Live vs. Simulated
 
-With `OTARI_API_KEY` set in `.env`, optimize and benchmark calls go live to `https://eu.api.otari.ai/api/v1`:
+With `OTARI_API_KEY` set in `.env`, optimize, benchmark and arena calls go live to `https://eu.api.otari.ai/api/v1`:
 
 - **Optimizer:** `alibaba/qwen-3.5-35b-a3b` (override with `OTARI_OPTIMIZER_MODEL`) compresses the hardened prompt. Its rewrite is used only if it keeps every `<user_input>` guard, puts inputs last and is shorter; otherwise the rule-based rewrite is used, and `optimizerSource` says which.
 - **Benchmark:** compares `mistralai/mistral-large-latest` with `mistralai/ministral-8b-latest` by default (override with `OTARI_BENCHMARK_ORIGINAL_MODEL` / `OTARI_BENCHMARK_OPTIMIZED_MODEL`). Cost comes from Otari's reported `usage.cost_usd` when available (`costSource: "gateway"`), otherwise from the pricing catalog. Output agreement is computed from the two responses.
@@ -91,11 +98,11 @@ With `OTARI_API_KEY` set in `.env`, optimize and benchmark calls go live to `htt
 
 Without a key (or with `PROMPTLINT_OFFLINE=1`, which the tests use), a deterministic simulator answers instead, and every result is flagged `simulated: true`. A failed live call also falls back to the simulator and reports `gatewayError`. Token counts use the `o200k_base` BPE tokenizer.
 
-### 7. Start the Web UI
+### 8. Start the Web UI
 ```bash
 npm run dev:web
 ```
-Opens the Playground, Benchmark, PR Reports and Dashboard at `http://localhost:5173`. It talks to the API at `VITE_API_URL` (default `http://localhost:4000`). Results that came from the offline simulator rather than a live Otari call are badged **SIMULATED**.
+Opens the Playground, Benchmark, Injection Arena, PR Reports and Dashboard at `http://localhost:5173`. It talks to the API at `VITE_API_URL` (default `http://localhost:4000`). Results that came from the offline simulator rather than a live Otari call are badged **SIMULATED**.
 
 ---
 

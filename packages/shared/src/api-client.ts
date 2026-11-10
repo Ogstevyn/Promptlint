@@ -5,6 +5,9 @@ import {
   DashboardStats,
   DemoPreset,
   FileScanResult,
+  InjectionArenaRequest,
+  InjectionArenaResponse,
+  InjectionAttackInfo,
   LintRuleMetadata,
   ModelPricing,
   OptimizeRequest,
@@ -71,6 +74,17 @@ export class PromptLintApiClient {
       method: "POST",
       body: JSON.stringify(payload)
     });
+  }
+
+  async runInjectionArena(payload: InjectionArenaRequest): Promise<InjectionArenaResponse> {
+    return this.request<InjectionArenaResponse>("/api/v1/injection-arena", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  }
+
+  async getInjectionAttacks(): Promise<InjectionAttackInfo[]> {
+    return this.request<InjectionAttackInfo[]>("/api/v1/injection-arena/attacks");
   }
 
   async getDashboardStats(): Promise<DashboardStats> {

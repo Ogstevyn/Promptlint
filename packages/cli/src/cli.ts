@@ -4,7 +4,10 @@ import path from "path";
 import {
   buildPRCostReport,
   generatePRMarkdownReport,
+  compressAndHardenPrompt,
   optimizePromptAndCode,
+  runInjectionArena,
+  scanCodeString,
   scanRepositoryPath
 } from "@promptlint/core";
 
@@ -269,6 +272,92 @@ async function runCiReportCommand(args: string[]) {
   }
 }
 
+const ARENA_VALUE_FLAGS = ["--model", "--target", "--attacks", "--hardened"];
+
+async function runArenaCommand(args: string[]) {
+  const targetFile = args.find((a, i) => !a.startsWith("--") && !ARENA_VALUE_FLAGS.includes(args[i - 1]));
+  if (!targetFile) {
+    console.error(
+      "Usage: promptlint arena <file> [--model <model>] [--target <variable>] [--attacks id1,id2] [--hardened <file>] [--json]"
+    );
+    process.exit(1);
+  }
+  const resolved = path.resolve(targetFile);
+  if (!fs.existsSync(resolved)) {
+    console.error(`File not found: ${resolved}`);
+    process.exit(1);
+  }
+  const code = fs.readFileSync(resolved, "utf-8");
+  // Source files: attack the first LLM prompt found. Anything else is treated as a raw prompt.
+  const extracted = scanCodeString(code, targetFile).prompts[0];
+  const originalPrompt = extracted?.userPromptTemplate || code;
+  const hardenedFile = getFlagValue(args, "--hardened");
+  const hardenedPrompt = hardenedFile
+    ? fs.readFileSync(path.resolve(hardenedFile), "utf-8")
+    : extracted
+      ? compressAndHardenPrompt(extracted.userPromptTemplate, extracted.interpolatedVariables).optimizedPrompt
+      : undefined;
+  const attacks = getFlagValue(args, "--attacks")
+    ?.split(",")
+    .map((a) => a.trim())
+    .filter(Boolean);
+  const isJson = args.includes("--json");
+
+  if (!isJson) {
+    printBanner();
+    console.log(`Injection Arena: ${COLORS.bold}${targetFile}${COLORS.reset} (original vs PromptLint-hardened)\n`);
+  }
+
+  const r = await runInjectionArena({
+    originalPrompt,
+    hardenedPrompt,
+    model: getFlagValue(args, "--model"),
+    targetVariable: getFlagValue(args, "--target"),
+    attacks
+  });
+
+  if (isJson) {
+    console.log(JSON.stringify(r, null, 2));
+    return;
+  }
+
+  const mode =
+    r.mode === "live"
+      ? `${COLORS.green}LIVE${COLORS.reset} via Otari`
+      : r.mode === "mixed"
+        ? `${COLORS.yellow}PARTLY LIVE${COLORS.reset} (failed calls excluded)`
+        : `${COLORS.yellow}SIMULATED${COLORS.reset} (not evidence: set OTARI_API_KEY for a live red-team)`;
+  console.log(`  Mode:     ${mode}`);
+  console.log(`  Model:    ${r.model}`);
+  console.log(`  Canary:   ${r.canary}`);
+  console.log(`  Injected: ${r.targetVariable ? `into variable '${r.targetVariable}'` : "appended as input"}`);
+  for (const e of r.gatewayErrors) console.log(`  ${COLORS.yellow}Gateway error:${COLORS.reset} ${e}`);
+  console.log("");
+
+  const mark = (a: { succeeded: boolean; simulated: boolean; gatewayError?: string; canaryMatch: string }) =>
+    a.simulated && a.gatewayError
+      ? `${COLORS.yellow}FAILED  ${COLORS.reset}`
+      : a.simulated
+        ? `${COLORS.dim}sim     ${COLORS.reset}`
+        : a.succeeded
+        ? `${COLORS.red}${a.canaryMatch === "near" ? "BROKEN~ " : "BROKEN  "}${COLORS.reset}`
+        : `${COLORS.green}held    ${COLORS.reset}`;
+  console.log(`  ${"Attack".padEnd(32)} Original Hardened`);
+  for (const res of r.results) {
+    console.log(`  ${res.name.slice(0, 32).padEnd(32)} ${mark(res.original)} ${mark(res.hardened)}`);
+  }
+  const side = (s: typeof r.summary.original) => `${s.succeeded}/${s.liveAttempts || s.attempted}`;
+  console.log(
+    `\n  ${COLORS.bold}Attacks that broke through:${COLORS.reset} original ${COLORS.red}${side(r.summary.original)}${COLORS.reset} -> hardened ${COLORS.green}${side(r.summary.hardened)}${COLORS.reset}`
+  );
+  if (r.results.some((x) => x.original.canaryMatch === "near" || x.hardened.canaryMatch === "near")) {
+    console.log(`  ${COLORS.dim}~ near match: the model obeyed but fumbled joining the canary (at most two slips)${COLORS.reset}`);
+  }
+  if (r.totalGatewayCostUsd !== undefined) {
+    console.log(`  Gateway cost: $${r.totalGatewayCostUsd.toFixed(4)}`);
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0] || "scan";
@@ -287,12 +376,16 @@ async function main() {
     case "report":
       await runCiReportCommand(subArgs);
       break;
+    case "arena":
+      await runArenaCommand(subArgs);
+      break;
     default:
       printBanner();
       console.log("Commands:");
       console.log("  promptlint scan [dir|file] [--volume 100000] [--json]");
       console.log("  promptlint optimize <file> [--write] [--model gpt-4o-mini]");
       console.log("  promptlint ci-report [dir|file] [--output report.md] [--volume 100000] [--post-pr]");
+      console.log("  promptlint arena <file> [--model <model>] [--target <variable>] [--attacks id1,id2] [--json]");
       break;
   }
 }
