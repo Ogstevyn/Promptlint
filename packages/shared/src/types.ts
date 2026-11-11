@@ -135,6 +135,8 @@ export interface OptimizeRequest {
   targetModel?: string;
   monthlyVolume?: number;
   useOtariLLM?: boolean;
+  /** End user to bill and budget (sent as Otari's `user` when per-user budgets are on) */
+  user?: string;
 }
 
 export interface OptimizeResponse {
@@ -160,6 +162,10 @@ export interface OptimizeResponse {
     simulated: boolean;
     /** Why the live call failed, when it fell back to the simulator */
     gatewayError?: string;
+    /** Which provider and model served the optimizer call, and whether its routing policy fell back */
+    routing?: OtariRoutingInfo;
+    /** Set when Otari refused the optimizer call (budget or guardrail) */
+    blocked?: OtariBlock;
   };
   /** "llm" when the Otari optimizer model's rewrite passed validation, "rules" for the deterministic fallback */
   optimizerSource: "llm" | "rules";
@@ -173,6 +179,10 @@ export interface BenchmarkRequest {
   originalModel?: string;
   optimizedModel?: string;
   monthlyVolume?: number;
+  /** End user to bill and budget (sent as Otari's `user` when per-user budgets are on) */
+  user?: string;
+  /** Otari guardrail on both calls; defaults to OTARI_GUARDRAIL_MODE */
+  guardrailMode?: OtariGuardrailMode;
 }
 
 export interface BenchmarkExecutionMetrics {
@@ -195,6 +205,12 @@ export interface BenchmarkExecutionMetrics {
   gatewayCostUsd?: number;
   /** "gateway" when cost figures use the gateway-reported cost, "catalog" when estimated from the price table */
   costSource: "gateway" | "catalog";
+  /** Which provider and model Otari actually used, and whether a routing policy fell back */
+  routing?: OtariRoutingInfo;
+  /** Otari guardrail verdicts on this call's input */
+  guardrails?: OtariGuardrailResult[];
+  /** Set when Otari refused the call (guardrail block or budget); no model output then */
+  blocked?: OtariBlock;
 }
 
 export interface BenchmarkResponse {
@@ -328,6 +344,10 @@ export interface InjectionArenaRequest {
    * "single-message" sends the filled prompt as one user message, like the original.
    */
   delivery?: "system-split" | "single-message";
+  /** Otari guardrail on every call; "block" lets Otari refuse flagged payloads. Defaults to OTARI_GUARDRAIL_MODE */
+  guardrailMode?: OtariGuardrailMode;
+  /** End user to bill and budget (sent as Otari's `user` when per-user budgets are on) */
+  user?: string;
 }
 
 /** One model call in the arena (an attack against one side) */
@@ -351,6 +371,11 @@ export interface InjectionArenaAttempt {
   otariRequestId: string;
   idempotentReplayed: boolean;
   gatewayCostUsd?: number;
+  routing?: OtariRoutingInfo;
+  /** Otari guardrail verdicts on this payload */
+  guardrails?: OtariGuardrailResult[];
+  /** Set when Otari refused the call; a guardrail block means the model never saw the attack */
+  blocked?: OtariBlock;
 }
 
 export interface InjectionArenaAttackResult extends InjectionAttackInfo {
@@ -371,6 +396,14 @@ export interface InjectionArenaSideSummary {
   succeeded: number;
   /** succeeded / denominator, 0-100 */
   successRatePct: number;
+  /** Payloads the Otari guardrail evaluated (status "evaluated") */
+  guardrailEvaluated: number;
+  /** Payloads the Otari guardrail flagged (valid false), whether or not it blocked them */
+  guardrailFlagged: number;
+  /** Calls Otari refused with guardrail_violation (block mode); the model never saw them */
+  guardrailBlocked: number;
+  /** Calls refused by an Otari budget */
+  budgetBlocked: number;
 }
 
 export interface InjectionArenaResponse {
@@ -395,6 +428,11 @@ export interface InjectionArenaResponse {
   hardenedDelivery: "system-split" | "single-message";
   /** Template variable the payload was injected into (undefined when the prompt had none and the payload was appended) */
   targetVariable?: string;
+  /** Otari guardrail requested on every call, and the profile */
+  guardrailMode: OtariGuardrailMode;
+  guardrailProfile?: string;
+  /** Otari's verdict on whether the guardrail ran: "unavailable" when the org has none configured */
+  guardrailStatus?: "evaluated" | "unavailable" | "mixed" | "off";
   summary: {
     original: InjectionArenaSideSummary;
     hardened: InjectionArenaSideSummary;
@@ -403,4 +441,85 @@ export interface InjectionArenaResponse {
   totalGatewayCostUsd?: number;
   durationMs: number;
   results: InjectionArenaAttackResult[];
+}
+
+// ---------------------------------------------------------------------------
+// Otari gateway features: routing policies, guardrails and budgets
+// ---------------------------------------------------------------------------
+
+/** How Otari served a request, from the Otari-Provider / -Model / -Attempt-Count / -Fallback headers */
+export interface OtariRoutingInfo {
+  /** Provider instance that answered, e.g. "mistral" */
+  provider?: string;
+  /** Model the provider was sent, e.g. "ministral-8b-latest" (a policy name keeps its own name in the body) */
+  servedModel?: string;
+  /** Candidates the request was sent to, including the one that served */
+  attemptCount?: number;
+  /** true when a candidate other than the plan's first served the request */
+  fallback?: boolean;
+}
+
+/** One entry of the Otari-Guardrails response header */
+export interface OtariGuardrailResult {
+  profile: string;
+  mode: "monitor" | "block";
+  /** false: the input was flagged; true: it passed; null: no verdict */
+  valid: boolean | null;
+  score: number | null;
+  status: "evaluated" | "inconclusive" | "unavailable";
+  /** Why an unavailable check could not run, e.g. "not_configured" */
+  reason?: string;
+}
+
+/** A live request Otari refused on purpose: a guardrail in block mode, or a budget */
+export interface OtariBlock {
+  by: "guardrail" | "budget";
+  /** Otari error code, e.g. "guardrail_violation" or "budget_exceeded" */
+  code: string;
+  detail: string;
+  /** Otari-Budget-Scope: "user" or the ceiling's scope */
+  budgetScope?: string;
+  /** Seconds until the refusing budget resets */
+  retryAfterSec?: number;
+  /** End user the refusal names, on a service key */
+  endUser?: string;
+}
+
+/** Guardrail requested on each call: mode "off" sends none */
+export type OtariGuardrailMode = "off" | "monitor" | "block";
+
+/** An end user's per-user budget on an Otari service key (GET /api/v1/end-users) */
+export interface OtariEndUserBudgetStatus {
+  /** false when per-user budgets are not set up (no service key, or OTARI_END_USERS unset) */
+  enabled: boolean;
+  user?: string;
+  /** Present when the end user exists on the gateway */
+  found?: boolean;
+  budgetId?: string;
+  budgetName?: string;
+  maxBudgetUsd?: number | null;
+  spendUsd?: number;
+  remainingUsd?: number | null;
+  period?: string;
+  blocked?: boolean;
+  /** Why the status could not be read */
+  error?: string;
+  /** Raw gateway record, for fields this client does not map */
+  /** When the budget period resets (ISO time) */
+  resetsAt?: string;
+  /** Requests this end user made in the current period */
+  requests?: number;
+}
+
+/** What the app does with Otari's features, for the health check and the UI */
+export interface OtariFeatureConfig {
+  /** Guardrail profile sent with requests, e.g. "prompt-injection" */
+  guardrailProfile: string;
+  guardrailMode: OtariGuardrailMode;
+  /** Per-user budgets: requests name an end user (the key must be a service key) */
+  endUserBudgets: boolean;
+  optimizerModel: string;
+  benchmarkOriginalModel: string;
+  benchmarkOptimizedModel: string;
+  arenaModel: string;
 }

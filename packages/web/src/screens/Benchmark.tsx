@@ -4,7 +4,7 @@ import type { BenchmarkExecutionMetrics, BenchmarkResponse, ModelPricing } from 
 import type { BenchmarkInputs, BenchmarkRun } from "../App";
 import { api, errorMessage } from "../lib/api";
 import { ms, num, pct, tokenChange, usd } from "../lib/format";
-import { CostSourceBadge, GatewayError, ReplayBadge, RunModeBadge } from "../components/honesty";
+import { CostSourceBadge, GatewayError, GuardrailBadge, OtariBlockedNotice, ReplayBadge, RoutingBadge, RunModeBadge } from "../components/honesty";
 import { Badge, Button, Card, EmptyState, ErrorBanner, Stat, cx } from "../components/ui";
 
 export function Benchmark({
@@ -258,6 +258,13 @@ function RunCard({ label, m, accent }: { label: string; m: BenchmarkExecutionMet
     >
       <div className="flex flex-col gap-4">
         <GatewayError error={m.gatewayError} />
+        <OtariBlockedNotice blocked={m.blocked} />
+        {(m.routing || m.guardrails) && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <RoutingBadge routing={m.routing} requested={m.model} />
+            <GuardrailBadge results={m.guardrails} />
+          </div>
+        )}
         <div className="grid grid-cols-3 gap-4">
           <Stat label="Latency" value={ms(m.latencyMs)} sub={m.idempotentReplayed ? "replayed by Otari" : undefined} />
           <Stat label="Cost / 1k calls" value={usd(m.costPer1kCallsUsd)} />

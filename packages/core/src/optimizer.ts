@@ -3,6 +3,8 @@ import {
   BenchmarkResponse,
   OptimizeRequest,
   OptimizeResponse,
+  OtariFeatureConfig,
+  MODEL_PRICING_CATALOG,
   getModelPricing
 } from "@promptlint/shared";
 import { scanCodeString } from "./rules";
@@ -10,7 +12,12 @@ import { detectVerboseFiller, estimateTokens } from "./tokenizer";
 import {
   OtariChatResponse,
   OtariGatewayClient,
-  computeIdempotencyKey
+  buildOtariGuardrails,
+  computeIdempotencyKey,
+  otariEndUserBudgetsEnabled,
+  otariGuardrailModeFromEnv,
+  otariGuardrailProfile,
+  otariTargetReasoningEffort
 } from "./otari-client";
 import { computeOutputAgreement } from "./similarity";
 
@@ -492,6 +499,7 @@ export async function optimizePromptAndCode(
   const optimizerModel = process.env.OTARI_OPTIMIZER_MODEL || DEFAULT_OPTIMIZER_MODEL;
   const telemetryCall: OtariChatResponse = await otariClient.chatCompletion({
     model: optimizerModel,
+    user: req.user?.trim() || undefined,
     temperature: 0,
     reasoning_effort: optimizerReasoningEffort(),
     max_tokens: Math.min(2048, Math.max(256, estimateTokens(hardened.optimizedPrompt) * 2)),
@@ -516,7 +524,20 @@ export async function optimizePromptAndCode(
 
   let optimizedPrompt = hardened.optimizedPrompt;
   let optimizerSource: "llm" | "rules" = "rules";
-  if (telemetryCall.simulated) {
+  if (telemetryCall.routing?.fallback) {
+    explanation.push(
+      `Otari routing policy '${optimizerModel}' fell back to ${telemetryCall.routing.provider ?? "another provider"}:${
+        telemetryCall.routing.servedModel ?? "?"
+      } after ${telemetryCall.routing.attemptCount ?? 2} attempts.`
+    );
+  }
+  if (telemetryCall.blocked) {
+    explanation.push(
+      `Otari refused the optimizer call (${telemetryCall.blocked.code}${
+        telemetryCall.blocked.budgetScope ? `, ${telemetryCall.blocked.budgetScope} budget` : ""
+      }); used the rule-based rewrite.`
+    );
+  } else if (telemetryCall.simulated) {
     explanation.push(
       telemetryCall.gatewayError
         ? `Otari optimizer call to '${optimizerModel}' failed (${telemetryCall.gatewayError}); used the rule-based rewrite.`
@@ -589,7 +610,9 @@ export async function optimizePromptAndCode(
       cacheControlApplied: true,
       latencyMs: telemetryCall.latencyMs,
       simulated: telemetryCall.simulated,
-      ...(telemetryCall.gatewayError ? { gatewayError: telemetryCall.gatewayError } : {})
+      ...(telemetryCall.gatewayError ? { gatewayError: telemetryCall.gatewayError } : {}),
+      ...(telemetryCall.routing ? { routing: telemetryCall.routing } : {}),
+      ...(telemetryCall.blocked ? { blocked: telemetryCall.blocked } : {})
     },
     optimizerSource,
     explanation
@@ -615,16 +638,29 @@ export async function benchmarkPromptsViaOtari(
     process.env.OTARI_BENCHMARK_OPTIMIZED_MODEL ||
     DEFAULT_BENCHMARK_OPTIMIZED_MODEL;
   const monthlyVolume = req.monthlyVolume || 100_000;
+  // Otari features on both calls: the guardrail verdict on the test input, and the end user's budget
+  const guardrails = buildOtariGuardrails(req.guardrailMode);
+  const user = req.user?.trim() || undefined;
+  const reasoning_effort = otariTargetReasoningEffort();
+  const scope = {
+    guardrails: guardrails?.map((g) => `${g.profile}:${g.mode}`) ?? [],
+    user: user ?? null,
+    reasoning: reasoning_effort ?? null
+  };
 
   const [origResult, optResult] = await Promise.all([
     client.chatCompletion({
       model: originalModel,
       temperature: 0,
+      reasoning_effort,
+      guardrails,
+      user,
       idempotencyKey: computeIdempotencyKey({
         stage: "original",
         model: originalModel,
         prompt: req.originalPrompt,
-        input: req.testInput
+        input: req.testInput,
+        ...scope
       }),
       messages: [
         {
@@ -636,11 +672,15 @@ export async function benchmarkPromptsViaOtari(
     client.chatCompletion({
       model: optimizedModel,
       temperature: 0,
+      reasoning_effort,
+      guardrails,
+      user,
       idempotencyKey: computeIdempotencyKey({
         stage: "optimized",
         model: optimizedModel,
         prompt: req.optimizedPrompt,
-        input: req.testInput
+        input: req.testInput,
+        ...scope
       }),
       messages: [
         {
@@ -661,8 +701,8 @@ export async function benchmarkPromptsViaOtari(
     })
   ]);
 
-  const origPricing = getModelPricing(originalModel);
-  const optPricing = getModelPricing(optimizedModel);
+  const origPricing = pricingForRun(originalModel, origResult);
+  const optPricing = pricingForRun(optimizedModel, optResult);
 
   // Prefer the cost the gateway actually billed; fall back to the price table.
   const costPerCall = (
@@ -730,7 +770,8 @@ export async function benchmarkPromptsViaOtari(
       simulated: origResult.simulated,
       costSource: origCost.source,
       ...(origResult.gatewayError ? { gatewayError: origResult.gatewayError } : {}),
-      ...(origResult.gatewayCostUsd !== undefined ? { gatewayCostUsd: origResult.gatewayCostUsd } : {})
+      ...(origResult.gatewayCostUsd !== undefined ? { gatewayCostUsd: origResult.gatewayCostUsd } : {}),
+      ...otariFeatureFields(origResult)
     },
     optimized: {
       model: optimizedModel,
@@ -747,7 +788,8 @@ export async function benchmarkPromptsViaOtari(
       simulated: optResult.simulated,
       costSource: optCost.source,
       ...(optResult.gatewayError ? { gatewayError: optResult.gatewayError } : {}),
-      ...(optResult.gatewayCostUsd !== undefined ? { gatewayCostUsd: optResult.gatewayCostUsd } : {})
+      ...(optResult.gatewayCostUsd !== undefined ? { gatewayCostUsd: optResult.gatewayCostUsd } : {}),
+      ...otariFeatureFields(optResult)
     },
     comparison: {
       latencyReductionMs,
@@ -757,9 +799,52 @@ export async function benchmarkPromptsViaOtari(
       monthlySavingsUsd: Number(monthlySavings.toFixed(2)),
       // Only meaningful when both outputs came from real model calls
       semanticEquivalenceScore:
-        origResult.simulated || optResult.simulated
+        origResult.simulated || optResult.simulated || origResult.blocked || optResult.blocked
           ? null
           : computeOutputAgreement(origResult.content, optResult.content)
     }
+  };
+}
+
+/** Routing, guardrail and refusal details of a live call, for the response */
+export function otariFeatureFields(run: OtariChatResponse): {
+  routing?: OtariChatResponse["routing"];
+  guardrails?: OtariChatResponse["guardrails"];
+  blocked?: OtariChatResponse["blocked"];
+} {
+  return {
+    ...(run.routing ? { routing: run.routing } : {}),
+    ...(run.guardrails ? { guardrails: run.guardrails } : {}),
+    ...(run.blocked ? { blocked: run.blocked } : {})
+  };
+}
+
+/**
+ * Price a call. A routing-policy name (e.g. "promptlint-cheap") is not in the catalog,
+ * so use the model Otari reports it actually served (Otari-Model) when there is one.
+ */
+export function pricingForRun(requestedModel: string, run: Pick<OtariChatResponse, "routing">) {
+  const requested = requestedModel.trim().toLowerCase();
+  if (MODEL_PRICING_CATALOG[requested]) return MODEL_PRICING_CATALOG[requested];
+  const served = run.routing?.servedModel?.trim().toLowerCase();
+  if (served) {
+    const match = Object.keys(MODEL_PRICING_CATALOG).find((key) => key === served || key.endsWith(`/${served}`));
+    if (match) return MODEL_PRICING_CATALOG[match];
+  }
+  return getModelPricing(requestedModel);
+}
+
+/** Which Otari features and models this process uses (env overrides applied) */
+export function otariFeatureConfig(): OtariFeatureConfig {
+  new OtariGatewayClient(); // loads .env
+  return {
+    guardrailProfile: otariGuardrailProfile(),
+    guardrailMode: otariGuardrailModeFromEnv(),
+    endUserBudgets: otariEndUserBudgetsEnabled(),
+    optimizerModel: process.env.OTARI_OPTIMIZER_MODEL || DEFAULT_OPTIMIZER_MODEL,
+    benchmarkOriginalModel: process.env.OTARI_BENCHMARK_ORIGINAL_MODEL || DEFAULT_BENCHMARK_ORIGINAL_MODEL,
+    benchmarkOptimizedModel: process.env.OTARI_BENCHMARK_OPTIMIZED_MODEL || DEFAULT_BENCHMARK_OPTIMIZED_MODEL,
+    arenaModel:
+      process.env.OTARI_ARENA_MODEL || process.env.OTARI_BENCHMARK_ORIGINAL_MODEL || DEFAULT_BENCHMARK_ORIGINAL_MODEL
   };
 }

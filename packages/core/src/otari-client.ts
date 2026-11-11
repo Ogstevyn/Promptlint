@@ -1,7 +1,14 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { getModelPricing } from "@promptlint/shared";
+import {
+  getModelPricing,
+  type OtariBlock,
+  type OtariEndUserBudgetStatus,
+  type OtariGuardrailMode,
+  type OtariGuardrailResult,
+  type OtariRoutingInfo
+} from "@promptlint/shared";
 import { estimateTokens } from "./tokenizer";
 
 function loadDotEnvIfNeeded() {
@@ -49,6 +56,21 @@ export interface OtariChatRequest {
   idempotencyKey?: string;
   /** Forwarded to the gateway; "none" turns off hidden reasoning on thinking models such as Qwen 3.5 */
   reasoning_effort?: "none" | "low" | "medium" | "high";
+  /**
+   * End user to bill and hold to their own Otari budget. Sent as `user` only when
+   * OTARI_END_USERS=1 (the key must be an Otari service key, or the gateway refuses it).
+   */
+  user?: string;
+  /** Otari guardrails to run on the input before the provider is called */
+  guardrails?: OtariGuardrailRequest[];
+}
+
+/** An entry of Otari's top-level `guardrails` request field */
+export interface OtariGuardrailRequest {
+  profile: string;
+  mode?: "monitor" | "block";
+  /** "monitor" serves the request when the guardrail cannot run instead of refusing it with 502 */
+  on_unavailable?: "monitor" | "block";
 }
 
 export interface OtariChatResponse {
@@ -70,7 +92,97 @@ export interface OtariChatResponse {
   gatewayError?: string;
   /** Actual cost the gateway reported for this call (usage.cost_usd), when available */
   gatewayCostUsd?: number;
+  /** Which provider and model Otari used, and whether a routing policy fell back */
+  routing?: OtariRoutingInfo;
+  /** Otari-Guardrails verdicts on the input */
+  guardrails?: OtariGuardrailResult[];
+  /** Set when Otari refused the request on purpose (guardrail block or budget); content is empty */
+  blocked?: OtariBlock;
+  /** Otari-End-User-Budget: the per-user budget the end user is on */
+  endUserBudget?: string;
 }
+
+/** Guardrail profile PromptLint asks Otari to run (OTARI_GUARDRAIL_PROFILE, default "prompt-injection") */
+export function otariGuardrailProfile(): string {
+  return (process.env.OTARI_GUARDRAIL_PROFILE || "prompt-injection").trim();
+}
+
+/** OTARI_GUARDRAIL_MODE: "off", "monitor" (default) or "block" */
+/**
+ * Reasoning effort for the models under test (benchmark and Arena), from
+ * OTARI_TARGET_REASONING_EFFORT; "none" by default. A thinking model such as Qwen 3.5
+ * otherwise spends its whole max_tokens reasoning and answers late or not at all.
+ * Both sides of a comparison get the same setting. "off" omits the field.
+ */
+export function otariTargetReasoningEffort(): "none" | "low" | "medium" | "high" | undefined {
+  const raw = (process.env.OTARI_TARGET_REASONING_EFFORT ?? "none").trim().toLowerCase();
+  if (raw === "" || raw === "off" || raw === "omit") return undefined;
+  return raw === "low" || raw === "medium" || raw === "high" ? raw : "none";
+}
+
+export function otariGuardrailModeFromEnv(): OtariGuardrailMode {
+  const mode = (process.env.OTARI_GUARDRAIL_MODE || "monitor").trim().toLowerCase();
+  return mode === "off" || mode === "block" ? mode : "monitor";
+}
+
+/** The `guardrails` field for a mode, or undefined for "off" */
+export function buildOtariGuardrails(mode: OtariGuardrailMode = otariGuardrailModeFromEnv()): OtariGuardrailRequest[] | undefined {
+  if (mode === "off") return undefined;
+  // on_unavailable "monitor": an org with no guardrail configured still gets answers,
+  // and the Otari-Guardrails header says the check was unavailable
+  return [{ profile: otariGuardrailProfile(), mode, on_unavailable: "monitor" }];
+}
+
+/** OTARI_END_USERS=1: the key is an Otari service key, so requests may name an end user */
+export function otariEndUserBudgetsEnabled(): boolean {
+  return process.env.OTARI_END_USERS === "1";
+}
+
+/** Read the Otari-Guardrails header: a JSON array, or several arrays joined by ", " */
+export function parseGuardrailsHeader(value: string | null): OtariGuardrailResult[] | undefined {
+  if (!value) return undefined;
+  const tryParse = (text: string): unknown => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  };
+  let parsed = tryParse(value);
+  if (parsed === undefined) parsed = tryParse(`[${value}]`);
+  if (!Array.isArray(parsed)) return undefined;
+  const flat = parsed.flat() as Array<Record<string, unknown>>;
+  const results = flat
+    .filter((r) => r && typeof r === "object" && typeof r.profile === "string")
+    .map((r) => ({
+      profile: String(r.profile),
+      mode: r.mode === "block" ? ("block" as const) : ("monitor" as const),
+      valid: typeof r.valid === "boolean" ? r.valid : null,
+      score: typeof r.score === "number" ? r.score : null,
+      status:
+        r.status === "evaluated" || r.status === "inconclusive" ? (r.status as "evaluated" | "inconclusive") : ("unavailable" as const),
+      ...(typeof r.reason === "string" ? { reason: r.reason } : {})
+    }));
+  return results.length > 0 ? results : undefined;
+}
+
+/** Otari-Provider, Otari-Model, Otari-Attempt-Count and Otari-Fallback */
+export function parseRoutingHeaders(headers: { get(name: string): string | null }): OtariRoutingInfo | undefined {
+  const provider = headers.get("Otari-Provider") || undefined;
+  const servedModel = headers.get("Otari-Model") || undefined;
+  const attempts = Number(headers.get("Otari-Attempt-Count"));
+  const fallbackHeader = headers.get("Otari-Fallback");
+  const info: OtariRoutingInfo = {
+    ...(provider ? { provider } : {}),
+    ...(servedModel ? { servedModel } : {}),
+    ...(Number.isFinite(attempts) && attempts > 0 ? { attemptCount: attempts } : {}),
+    ...(fallbackHeader ? { fallback: fallbackHeader.toLowerCase() === "true" } : {})
+  };
+  return Object.keys(info).length > 0 ? info : undefined;
+}
+
+const GUARDRAIL_CODES = new Set(["guardrail_violation"]);
+const BUDGET_CODES = new Set(["budget_exceeded", "user_blocked", "end_user_budget_not_allowed"]);
 
 interface CachedOtariEntry {
   response: OtariChatResponse;
@@ -118,13 +230,18 @@ export class OtariGatewayClient {
   }
 
   public async chatCompletion(req: OtariChatRequest): Promise<OtariChatResponse> {
-    const idempotencyKey =
-      req.idempotencyKey ||
-      computeIdempotencyKey({
-        model: req.model,
-        messages: req.messages,
-        temperature: req.temperature ?? 0
-      });
+    const body = {
+      model: req.model,
+      messages: req.messages,
+      temperature: req.temperature ?? 0,
+      max_tokens: req.max_tokens ?? 512,
+      ...(req.reasoning_effort ? { reasoning_effort: req.reasoning_effort } : {}),
+      ...(req.user && otariEndUserBudgetsEnabled() ? { user: req.user } : {}),
+      ...(req.guardrails && req.guardrails.length > 0 ? { guardrails: req.guardrails } : {})
+    };
+    // Otari refuses a reused key with a different body (422), so the default key
+    // covers everything sent: another end user or guardrail mode is a new request
+    const idempotencyKey = req.idempotencyKey || computeIdempotencyKey(body);
 
     // Offline only: emulate Otari's idempotent replay locally. With a live key the
     // request always goes to the gateway, which replays it itself and reports
@@ -153,14 +270,11 @@ export class OtariGatewayClient {
             "Otari-Key": this.apiKey,
             "Idempotency-Key": idempotencyKey
           },
-          body: JSON.stringify({
-            model: req.model,
-            messages: req.messages,
-            temperature: req.temperature ?? 0,
-            max_tokens: req.max_tokens ?? 512,
-            ...(req.reasoning_effort ? { reasoning_effort: req.reasoning_effort } : {})
-          })
+          body: JSON.stringify(body)
         });
+        const routing = parseRoutingHeaders(res.headers);
+        const guardrails = parseGuardrailsHeader(res.headers.get("Otari-Guardrails"));
+        const endUserBudget = res.headers.get("Otari-End-User-Budget") || undefined;
 
         if (res.ok) {
           const data = (await res.json()) as any;
@@ -203,7 +317,10 @@ export class OtariGatewayClient {
             otariAttemptId,
             idempotentReplayed,
             idempotencyKey,
-            simulated: false
+            simulated: false,
+            ...(routing ? { routing } : {}),
+            ...(guardrails ? { guardrails } : {}),
+            ...(endUserBudget ? { endUserBudget } : {})
           };
           const costUsd = Number(data.usage?.cost_usd ?? data.usage?.estimated_cost);
           if (Number.isFinite(costUsd)) result.gatewayCostUsd = costUsd;
@@ -211,9 +328,62 @@ export class OtariGatewayClient {
         }
 
         const errorBody = (await res.json().catch(() => ({}))) as any;
-        gatewayError = `${res.status}${errorBody?.code ? ` ${errorBody.code}` : ""}: ${String(
-          errorBody?.detail ?? errorBody?.error?.message ?? res.statusText
-        ).slice(0, 200)}`;
+        // Otari nests the error: {"detail": {"message", "code", "guardrails": [...]}}.
+        // Older/plain errors carry "detail" as a string with "code" alongside.
+        const err = errorBody?.detail && typeof errorBody.detail === "object" ? errorBody.detail : errorBody ?? {};
+        const errorCode = String(res.headers.get("Otari-Error-Code") || err?.code || errorBody?.code || "");
+        const errorMessage = String(
+          (typeof errorBody?.detail === "string" ? errorBody.detail : err?.message) ??
+            errorBody?.error?.message ??
+            res.statusText
+        );
+        if (GUARDRAIL_CODES.has(errorCode) || BUDGET_CODES.has(errorCode)) {
+          // The block body names the guardrails that fired; use it when the header is absent
+          const blockedBy: OtariGuardrailResult[] | undefined = Array.isArray(err?.guardrails)
+            ? err.guardrails.map((g: any) => ({
+                profile: String(g?.profile ?? otariGuardrailProfile()),
+                mode: "block" as const,
+                valid: false,
+                score: typeof g?.score === "number" ? g.score : null,
+                status: "evaluated" as const,
+                ...(g?.explanation ? { reason: String(g.explanation) } : {})
+              }))
+            : undefined;
+          const guardrailResults = guardrails ?? (blockedBy && blockedBy.length > 0 ? blockedBy : undefined);
+          // A refusal Otari made on purpose is a real, live result, not a reason to simulate
+          const retryAfter = Number(res.headers.get("Retry-After"));
+          const budgetScope = res.headers.get("Otari-Budget-Scope") || undefined;
+          return {
+            content: "",
+            model: req.model,
+            inputTokens: 0,
+            cachedTokens: 0,
+            outputTokens: 0,
+            latencyMs: Date.now() - startTime,
+            routedViaOtari: true,
+            otariEndpoint: endpoint,
+            otariRequestId: res.headers.get("Otari-Request-ID") || `otari_req_${idempotencyKey.slice(0, 12)}`,
+            otariAttemptId: res.headers.get("Otari-Attempt-ID") || `otari_att_${idempotencyKey.slice(12, 20)}`,
+            idempotentReplayed: false,
+            idempotencyKey,
+            simulated: false,
+            gatewayCostUsd: 0,
+            ...(routing ? { routing } : {}),
+            ...(guardrailResults ? { guardrails: guardrailResults } : {}),
+            ...(endUserBudget ? { endUserBudget } : {}),
+            blocked: {
+              by: GUARDRAIL_CODES.has(errorCode) ? "guardrail" : "budget",
+              code: errorCode,
+              detail: errorMessage.slice(0, 300),
+              ...(budgetScope ? { budgetScope } : {}),
+              ...(Number.isFinite(retryAfter) && retryAfter > 0 ? { retryAfterSec: retryAfter } : {}),
+              ...(typeof (err?.end_user ?? errorBody?.end_user) === "string"
+                ? { endUser: String(err?.end_user ?? errorBody?.end_user) }
+                : {})
+            }
+          };
+        }
+        gatewayError = `${res.status}${errorCode ? ` ${errorCode}` : ""}: ${errorMessage.slice(0, 200)}`;
       } catch (err) {
         gatewayError = `gateway unreachable: ${(err as Error).message}`;
       }
@@ -265,6 +435,63 @@ export class OtariGatewayClient {
     });
 
     return fallbackResponse;
+  }
+
+  /**
+   * The end user's per-user budget on this service key (GET /end-users), with the
+   * budget's limit from GET /end-user-budgets. Never throws.
+   */
+  public async getEndUserBudgetStatus(user: string): Promise<OtariEndUserBudgetStatus> {
+    if (!this.apiKey || !otariEndUserBudgetsEnabled()) return { enabled: false, user };
+    const headers = { "Otari-Key": this.apiKey, Authorization: `Bearer ${this.apiKey}` };
+    try {
+      const res = await fetch(`${this.baseUrl}/end-users?external_id=${encodeURIComponent(user)}`, { headers });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as any;
+        return { enabled: true, user, error: `${res.status}: ${String(
+          (typeof body?.detail === "string" ? body.detail : body?.detail?.message) ?? res.statusText
+        ).slice(0, 200)}` };
+      }
+      const list = (await res.json()) as any;
+      const record = Array.isArray(list) ? list[0] : Array.isArray(list?.items) ? list.items[0] : list;
+      if (!record) return { enabled: true, user, found: false };
+
+      const budgetId: string | undefined = record.budget_id ?? record.budget?.id ?? undefined;
+      let budget: any = record.budget ?? undefined;
+      if (budgetId && !budget?.max_budget) {
+        const budgetsRes = await fetch(`${this.baseUrl}/end-user-budgets`, { headers }).catch(() => undefined);
+        if (budgetsRes?.ok) {
+          const budgets = (await budgetsRes.json().catch(() => [])) as any;
+          const items: any[] = Array.isArray(budgets) ? budgets : budgets?.items ?? [];
+          budget = items.find((b) => b?.id === budgetId || b?.budget_id === budgetId) ?? budget;
+        }
+      }
+      const num = (...values: unknown[]): number | undefined => {
+        for (const v of values) {
+          const n = typeof v === "string" ? Number(v) : v;
+          if (typeof n === "number" && Number.isFinite(n)) return n;
+        }
+        return undefined;
+      };
+      const spendUsd = num(record.spend, record.current_spend, record.period_spend, record.total_spend) ?? 0;
+      const maxBudgetUsd = num(budget?.max_budget, record.max_budget) ?? null;
+      return {
+        enabled: true,
+        user,
+        found: true,
+        ...(budgetId ? { budgetId } : {}),
+        ...(budget?.name ? { budgetName: String(budget.name) } : {}),
+        maxBudgetUsd,
+        spendUsd,
+        remainingUsd: maxBudgetUsd === null ? null : Math.max(0, maxBudgetUsd - spendUsd),
+        ...(budget?.budget_duration || budget?.period ? { period: String(budget.budget_duration ?? budget.period) } : {}),
+        ...(record.next_budget_reset_at ? { resetsAt: String(record.next_budget_reset_at) } : {}),
+        ...(typeof record.current_requests === "number" ? { requests: record.current_requests } : {}),
+        blocked: Boolean(record.blocked)
+      };
+    } catch (err) {
+      return { enabled: true, user, error: `gateway unreachable: ${(err as Error).message}` };
+    }
   }
 
   private generateDeterministicCompletion(prompt: string): string {
