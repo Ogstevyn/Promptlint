@@ -8,7 +8,12 @@ import {
   InjectionAttackInfo
 } from "@promptlint/shared";
 import { OtariChatResponse, OtariGatewayClient, computeIdempotencyKey } from "./otari-client";
-import { DEFAULT_BENCHMARK_ORIGINAL_MODEL, compressAndHardenPrompt, escapeUntrustedInput } from "./optimizer";
+import {
+  DEFAULT_BENCHMARK_ORIGINAL_MODEL,
+  compressAndHardenPrompt,
+  escapeUntrustedInput,
+  splitHardenedTemplate
+} from "./optimizer";
 
 /**
  * Injection Arena: a fixed corpus of prompt-injection payloads run against the
@@ -383,21 +388,6 @@ export interface InjectionArenaOptions {
   maxRetries?: number;
   /** Base backoff before a retry, doubled each time (default 1500 ms) */
   retryDelayMs?: number;
-}
-
-/**
- * Split a hardened template the way PromptLint's generated code sends it: the static
- * instructions (and security boundary) go in the system message, the input section
- * (first <user_input> to last </user_input>, labels in between included) in the user
- * message. Returns null when the template has no <user_input> block.
- */
-export function splitHardenedTemplate(template: string): { system: string; user: string } | null {
-  const first = template.indexOf("<user_input>");
-  const lastClose = template.lastIndexOf("</user_input>");
-  if (first === -1 || lastClose === -1 || lastClose < first) return null;
-  const end = lastClose + "</user_input>".length;
-  const system = `${template.slice(0, first).trimEnd()}\n\n${template.slice(end).trimStart()}`.trim();
-  return { system, user: template.slice(first, end) };
 }
 
 /** 429, 5xx and network failures are worth retrying; 4xx such as invalid_model are not. */

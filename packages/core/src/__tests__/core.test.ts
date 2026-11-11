@@ -1,5 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "fs";
+import path from "path";
 import { getModelPricing } from "@promptlint/shared";
 
 // Keep tests deterministic even when a real OTARI_API_KEY is in .env
@@ -17,7 +19,8 @@ import {
   validateOptimizerRewrite,
   optimizePromptAndCode,
   scanCodeString,
-  scanRepositoryPath
+  scanRepositoryPath,
+  splitHardenedTemplate
 } from "../index";
 
 describe("@promptlint/core scanner, rules, cost calculator & Otari optimizer", () => {
@@ -194,5 +197,88 @@ export async function classifyTicket(userInput: string) {
     const md = generatePRMarkdownReport(summary);
     assert.ok(md.includes("PromptLint x Mozilla Otari"));
     assert.ok(md.includes("Monthly Projected LLM Spend"));
+  });
+
+  describe("generated code forwards every interpolated variable", () => {
+    const examplesDir = path.resolve(__dirname, "../../../../examples/vulnerable-app");
+    const cases: Array<{ file: string; expected: string[] }> = [
+      { file: "pii-scanner.ts", expected: ["gitDiff"] },
+      { file: "support-triage.ts", expected: ["customerMessage", "accountTier"] },
+      { file: "rag_pipeline.py", expected: ["user_query", "retrieved_docs"] }
+    ];
+
+    for (const { file, expected } of cases) {
+      it(`${file}: every variable is a parameter and is escaped into the user message`, async () => {
+        const code = fs.readFileSync(path.join(examplesDir, file), "utf8");
+        const scanned = scanCodeString(code, file).prompts[0].interpolatedVariables;
+        assert.deepEqual([...scanned].sort(), [...expected].sort());
+
+        const result = await optimizePromptAndCode({ code, filename: file });
+        const generated = result.optimizedCode;
+        const python = file.endsWith(".py");
+
+        const signature = python
+          ? generated.match(/def run_optimized_prompt\(([^)]*)\)/)
+          : generated.match(/export async function executeOptimizedPrompt\(([^)]*)\)/);
+        assert.ok(signature, "generated function not found");
+        const params = signature![1].split(",").map((p) => p.split(":")[0].trim());
+        // Same order as the original function, so positional callers keep working
+        assert.deepEqual(params, expected);
+
+        const userMessage = python
+          ? generated.match(/^\s*user_message = (f".*")$/m)
+          : generated.match(/^\s*const userMessage = (`.*`);$/m);
+        assert.ok(userMessage, "user message not found");
+        const staticPrompt = generated.match(/STATIC_SYSTEM_PROMPT = (?:"""|`)([\s\S]*?)(?:"""|`);?\n/);
+        assert.ok(staticPrompt, "static system prompt not found");
+        for (const name of expected) {
+          const escaped = python ? `{escape(${name}, quote=False)}` : `\${escapeUserInput(${name})}`;
+          assert.ok(
+            userMessage![1].includes(`<user_input>${escaped}</user_input>`),
+            `${name} is not escaped into the user message: ${userMessage![1]}`
+          );
+          // The variable is input, never part of the cached static instructions
+          assert.ok(!staticPrompt![1].includes(name), `${name} leaked into the system prompt`);
+        }
+        assert.ok(staticPrompt![1].includes(SECURITY_BOUNDARY_DIRECTIVE));
+        // The idempotency key hashes the user message, so it covers every variable
+        assert.ok(
+          python
+            ? generated.includes(":{STATIC_SYSTEM_PROMPT}:{user_message}")
+            : generated.includes(":${STATIC_SYSTEM_PROMPT}:${userMessage}")
+        );
+      });
+    }
+
+    it("matches the Injection Arena split and escapes static text for the target language", () => {
+      const prompt =
+        'Return `JSON` with "a\\b".\n\nDocs:\n\n<user_input>{retrieved_docs}</user_input>\n\nQ: <user_input>${user.query}</user_input>\n\n' +
+        SECURITY_BOUNDARY_DIRECTIVE;
+      const split = splitHardenedTemplate(prompt)!;
+      assert.equal(split.user, "<user_input>{retrieved_docs}</user_input>\n\nQ: <user_input>${user.query}</user_input>");
+
+      const ts = generateOtariOptimizedCode("", "typescript", "m", prompt, []);
+      assert.ok(ts.includes("executeOptimizedPrompt(retrieved_docs: string, user_query: string)"));
+      assert.ok(
+        ts.includes(
+          "const userMessage = `<user_input>${escapeUserInput(retrieved_docs)}</user_input>\\n\\nQ: <user_input>${escapeUserInput(user_query)}</user_input>`;"
+        )
+      );
+      assert.ok(ts.includes('const STATIC_SYSTEM_PROMPT = `Return \\`JSON\\` with "a\\\\b".'));
+
+      const py = generateOtariOptimizedCode("", "python", "m", prompt, []);
+      assert.ok(py.includes("def run_optimized_prompt(retrieved_docs: str, user_query: str):"));
+      assert.ok(
+        py.includes(
+          'user_message = f"<user_input>{escape(retrieved_docs, quote=False)}</user_input>\\n\\nQ: <user_input>{escape(user_query, quote=False)}</user_input>"'
+        )
+      );
+    });
+
+    it("never lets a variable shadow a name the generated code uses", () => {
+      const ts = generateOtariOptimizedCode("", "typescript", "m", "Hi\n<user_input>${userMessage}</user_input>", []);
+      assert.ok(ts.includes("executeOptimizedPrompt(userMessage_2: string)"));
+      assert.ok(ts.includes("${escapeUserInput(userMessage_2)}"));
+    });
   });
 });

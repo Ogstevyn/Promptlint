@@ -178,6 +178,144 @@ export function compressAndHardenPrompt(
   };
 }
 
+/**
+ * Split a hardened template the way PromptLint's generated code sends it: the static
+ * instructions (and security boundary) go in the system message, the input section
+ * (first <user_input> to last </user_input>, labels in between included) in the user
+ * message. Returns null when the template has no <user_input> block.
+ */
+export function splitHardenedTemplate(template: string): { system: string; user: string } | null {
+  const first = template.indexOf("<user_input>");
+  const lastClose = template.lastIndexOf("</user_input>");
+  if (first === -1 || lastClose === -1 || lastClose < first) return null;
+  const end = lastClose + "</user_input>".length;
+  const system = `${template.slice(0, first).trimEnd()}\n\n${template.slice(end).trimStart()}`.trim();
+  return { system, user: template.slice(first, end) };
+}
+
+/** A user message as static text interleaved with the parameters to escape and insert. */
+type UserMessagePart = { text: string } | { param: string };
+
+interface GeneratedCallPlan {
+  staticSystemPrompt: string;
+  params: string[];
+  userMessage: UserMessagePart[];
+}
+
+/** `${ ticket.body }` or `{ticket.body}` as the whole content of a <user_input> block */
+const GUARDED_PLACEHOLDER_RE = /^\s*(?:\$\{\s*([^{}]+?)\s*\}|\{\s*([^{}]+?)\s*\})\s*$/;
+
+/** Names the generated code already uses, so a parameter never shadows them. */
+const GENERATED_CODE_RESERVED_NAMES = [
+  "userMessage",
+  "idempotencyKey",
+  "escapeUserInput",
+  "otari",
+  "crypto",
+  "OpenAI",
+  "STATIC_SYSTEM_PROMPT",
+  "user_message",
+  "idempotency_key",
+  "escape",
+  "otari_client",
+  "hashlib",
+  "os"
+];
+
+/** Turn an interpolated expression such as `ticket.body` into a parameter name. */
+function toParamName(expr: string): string {
+  const name = expr.replace(/[^A-Za-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+  if (!name) return "userInput";
+  return /^[0-9]/.test(name) ? `_${name}` : name;
+}
+
+/**
+ * Plan the generated call: every variable interpolated in the input section becomes a
+ * parameter, and the user message is that whole section (labels included) with each
+ * variable escaped at runtime. Mirrors splitHardenedTemplate, which the Injection Arena
+ * uses, so the arena measures what the generated code sends.
+ */
+function planGeneratedCall(prompt: string, variables: string[]): GeneratedCallPlan {
+  const paramByExpr = new Map<string, string>();
+  const usedNames = new Set<string>(GENERATED_CODE_RESERVED_NAMES);
+  const paramFor = (expr: string): string => {
+    const existing = paramByExpr.get(expr);
+    if (existing) return existing;
+    const base = toParamName(expr);
+    let name = base;
+    for (let i = 2; usedNames.has(name); i++) name = `${base}_${i}`;
+    paramByExpr.set(expr, name);
+    usedNames.add(name);
+    return name;
+  };
+
+  const userMessage: UserMessagePart[] = [];
+  const split = splitHardenedTemplate(prompt);
+  if (split) {
+    let last = 0;
+    for (const m of split.user.matchAll(GUARDED_BLOCK_RE)) {
+      const inner = m[0].slice("<user_input>".length, -"</user_input>".length);
+      const placeholder = inner.match(GUARDED_PLACEHOLDER_RE);
+      if (!placeholder) continue; // literal text inside the tags stays static
+      const expr = (placeholder[1] ?? placeholder[2]).trim();
+      userMessage.push({ text: split.user.slice(last, m.index!) + "<user_input>" });
+      userMessage.push({ param: paramFor(expr) });
+      userMessage.push({ text: "</user_input>" });
+      last = m.index! + m[0].length;
+    }
+    userMessage.push({ text: split.user.slice(last) });
+  }
+
+  if (paramByExpr.size === 0) {
+    // No guarded placeholder: send the whole prompt as instructions and each
+    // variable (or a single userInput) as its own <user_input> block.
+    const exprs = variables.length > 0 ? variables : ["userInput"];
+    userMessage.length = 0;
+    exprs.forEach((expr, i) => {
+      userMessage.push({ text: `${i > 0 ? "\n\n" : ""}<user_input>` });
+      userMessage.push({ param: paramFor(expr) });
+      userMessage.push({ text: "</user_input>" });
+    });
+    return { staticSystemPrompt: prompt.trim(), params: Array.from(paramByExpr.values()), userMessage };
+  }
+
+  // Keep the original template's variable order (usually the caller's signature),
+  // not the hardened prompt's, which moves leading inputs to the end.
+  const exprOrder = (expr: string) => {
+    const i = variables.indexOf(expr);
+    return i === -1 ? variables.length : i;
+  };
+  const orderedExprs = Array.from(paramByExpr.keys()).sort((a, b) => exprOrder(a) - exprOrder(b));
+
+  return {
+    staticSystemPrompt: split!.system,
+    params: orderedExprs.map((expr) => paramByExpr.get(expr)!),
+    userMessage: userMessage.filter((p) => !("text" in p) || p.text.length > 0)
+  };
+}
+
+/** Body of a JS template literal (without the backticks) for static text. */
+function escapeTsTemplateText(text: string, keepNewlines = false): string {
+  const escaped = text.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
+  return keepNewlines ? escaped : escaped.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+}
+
+/** Body of a Python f"..." string (without the quotes) for static text. */
+function escapePyFStringText(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\{/g, "{{")
+    .replace(/\}/g, "}}");
+}
+
+/** Body of a Python """...""" string (without the quotes). */
+function escapePyTripleQuoted(text: string): string {
+  return text.replace(/\\/g, "\\\\").replace(/"""/g, '\\"\\"\\"').replace(/"$/, '\\"');
+}
+
 export function generateOtariOptimizedCode(
   originalCode: string,
   language: string,
@@ -185,9 +323,20 @@ export function generateOtariOptimizedCode(
   optimizedPromptText: string,
   variables: string[]
 ): string {
-  const varExpr = variables[0] || "userInput";
+  if (language === "raw-prompt") {
+    return optimizedPromptText;
+  }
+
+  const plan = planGeneratedCall(optimizedPromptText, variables);
 
   if (language === "python") {
+    const pyParams = plan.params.map((p) => `${p}: str`).join(", ");
+    const pyUserMessage = plan.userMessage
+      .map((part) =>
+        "param" in part ? `{escape(${part.param}, quote=False)}` : escapePyFStringText(part.text)
+      )
+      .join("");
+
     return `import os
 from html import escape
 import hashlib
@@ -202,13 +351,15 @@ otari_client = OpenAI(
     }
 )
 
-STATIC_SYSTEM_PROMPT = """${optimizedPromptText
-      .replace(/<user_input>[\s\S]*?<\/user_input>/g, "")
-      .trim()}"""
+STATIC_SYSTEM_PROMPT = """${escapePyTripleQuoted(plan.staticSystemPrompt)}"""
 
-def run_optimized_prompt(${varExpr}: str):
+def run_optimized_prompt(${pyParams}):
+    # Escape <, > and & so the input cannot close the guard or fake a chat turn
+    user_message = f"${pyUserMessage}"
+
+    # The user message carries every input, so the key changes when any of them does
     idempotency_key = hashlib.sha256(
-        f"${recommendedModel}:{STATIC_SYSTEM_PROMPT}:{${varExpr}}".encode("utf-8")
+        f"${recommendedModel}:{STATIC_SYSTEM_PROMPT}:{user_message}".encode("utf-8")
     ).hexdigest()
 
     return otari_client.chat.completions.create(
@@ -229,22 +380,18 @@ def run_optimized_prompt(${varExpr}: str):
             },
             {
                 "role": "user",
-                # Escape <, > and & so the input cannot close the guard or fake a chat turn
-                "content": f"<user_input>{escape(${varExpr}, quote=False)}</user_input>"
+                "content": user_message
             }
         ]
     )
 `;
   }
 
-  if (language === "raw-prompt") {
-    return optimizedPromptText;
-  }
-
   // Default: TypeScript / JavaScript SDK routed through Mozilla Otari Gateway
-  const staticPortion = optimizedPromptText
-    .replace(/<user_input>[\s\S]*?<\/user_input>/g, "")
-    .trim();
+  const tsParams = plan.params.map((p) => `${p}: string`).join(", ");
+  const tsUserMessage = plan.userMessage
+    .map((part) => ("param" in part ? `\${escapeUserInput(${part.param})}` : escapeTsTemplateText(part.text)))
+    .join("");
 
   return `import crypto from "crypto";
 import OpenAI from "openai";
@@ -258,16 +405,19 @@ const otari = new OpenAI({
   }
 });
 
-const STATIC_SYSTEM_PROMPT = \`${staticPortion.replace(/`/g, "\\`")}\`;
+const STATIC_SYSTEM_PROMPT = \`${escapeTsTemplateText(plan.staticSystemPrompt, true)}\`;
 
 // Escape <, > and & so untrusted input cannot close the <user_input> guard or fake a chat turn
 const escapeUserInput = (text: string) =>
   text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-export async function executeOptimizedPrompt(${varExpr}: string) {
+export async function executeOptimizedPrompt(${tsParams}) {
+  const userMessage = \`${tsUserMessage}\`;
+
+  // The user message carries every input, so the key changes when any of them does
   const idempotencyKey = crypto
     .createHash("sha256")
-    .update(\`${recommendedModel}:\${STATIC_SYSTEM_PROMPT}:\${${varExpr}}\`)
+    .update(\`${recommendedModel}:\${STATIC_SYSTEM_PROMPT}:\${userMessage}\`)
     .digest("hex");
 
   return otari.chat.completions.create(
@@ -289,7 +439,7 @@ export async function executeOptimizedPrompt(${varExpr}: string) {
         },
         {
           role: "user",
-          content: \`<user_input>\${escapeUserInput(${varExpr})}</user_input>\`
+          content: userMessage
         }
       ]
     },
