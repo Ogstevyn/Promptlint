@@ -505,7 +505,10 @@ export interface OtariEndUserBudgetStatus {
   /** Why the status could not be read */
   error?: string;
   /** Raw gateway record, for fields this client does not map */
-  raw?: unknown;
+  /** When the budget period resets (ISO time) */
+  resetsAt?: string;
+  /** Requests this end user made in the current period */
+  requests?: number;
 }
 
 /** What the app does with Otari's features, for the health check and the UI */

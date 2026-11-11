@@ -16,7 +16,8 @@ import {
   computeIdempotencyKey,
   otariEndUserBudgetsEnabled,
   otariGuardrailModeFromEnv,
-  otariGuardrailProfile
+  otariGuardrailProfile,
+  otariTargetReasoningEffort
 } from "./otari-client";
 import { computeOutputAgreement } from "./similarity";
 
@@ -640,12 +641,18 @@ export async function benchmarkPromptsViaOtari(
   // Otari features on both calls: the guardrail verdict on the test input, and the end user's budget
   const guardrails = buildOtariGuardrails(req.guardrailMode);
   const user = req.user?.trim() || undefined;
-  const scope = { guardrails: guardrails?.map((g) => `${g.profile}:${g.mode}`) ?? [], user: user ?? null };
+  const reasoning_effort = otariTargetReasoningEffort();
+  const scope = {
+    guardrails: guardrails?.map((g) => `${g.profile}:${g.mode}`) ?? [],
+    user: user ?? null,
+    reasoning: reasoning_effort ?? null
+  };
 
   const [origResult, optResult] = await Promise.all([
     client.chatCompletion({
       model: originalModel,
       temperature: 0,
+      reasoning_effort,
       guardrails,
       user,
       idempotencyKey: computeIdempotencyKey({
@@ -665,6 +672,7 @@ export async function benchmarkPromptsViaOtari(
     client.chatCompletion({
       model: optimizedModel,
       temperature: 0,
+      reasoning_effort,
       guardrails,
       user,
       idempotencyKey: computeIdempotencyKey({

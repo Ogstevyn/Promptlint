@@ -172,6 +172,9 @@ export async function classifyTicket(userInput: string) {
   });
 
   it("benchmarks the Otari-catalog Mistral pair by default and prices it from the catalog offline", async () => {
+    // Defaults only: ignore model overrides from a local .env
+    delete process.env.OTARI_BENCHMARK_ORIGINAL_MODEL;
+    delete process.env.OTARI_BENCHMARK_OPTIMIZED_MODEL;
     const bench = await benchmarkPromptsViaOtari({
       originalPrompt: "Classify the sentiment of this review as positive, negative or neutral:",
       optimizedPrompt: "Classify sentiment (positive/negative/neutral):",

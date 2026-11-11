@@ -130,11 +130,12 @@ export default function App() {
       <header className="sticky top-0 z-20 border-b border-ink-800 bg-ink-950/85 backdrop-blur-md">
         <div className="mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2.5 sm:px-6">
           <a href="#playground" onClick={() => setTab("playground")} className="flex items-center gap-2.5">
-            <span className="grid size-7 place-items-center rounded-lg bg-brand text-ink-950">
-              <svg viewBox="0 0 32 32" className="size-5" aria-hidden>
-                <path d="M10 8v15h10" stroke="currentColor" strokeWidth="3.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </span>
+            <svg viewBox="0 0 512 512" className="size-7" aria-hidden>
+              <rect width="512" height="512" rx="112" fill="#161a1f" />
+              <rect x="8" y="8" width="496" height="496" rx="104" fill="none" stroke="#10b981" strokeOpacity="0.35" strokeWidth="16" />
+              <path d="M132 160 L244 256 L132 352" fill="none" stroke="#34d399" strokeWidth="60" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M274 342 q 16 -26 32 0 t 32 0 t 32 0 t 32 0" fill="none" stroke="#fbbf24" strokeWidth="34" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
             <span className="text-[15px] font-semibold tracking-tight text-ink-100">PromptLint</span>
             <span className="hidden text-xs text-ink-500 md:inline">× Mozilla Otari</span>
           </a>
@@ -266,18 +267,23 @@ function EndUserBudget({ endUserBudgets }: { endUserBudgets: boolean }) {
   const max = status?.maxBudgetUsd ?? null;
   const pctUsed = max && max > 0 ? Math.min(100, (spent / max) * 100) : 0;
   const exhausted = Boolean(status?.blocked) || (max !== null && spent >= max);
+  // Otari refuses once the next call's estimated cost exceeds what is left, so flag it early
+  const low = !exhausted && pctUsed >= 90;
   const fmt = (v: number) => "$" + (v < 0.01 ? v.toFixed(4) : v.toFixed(2));
   const title = status?.error
     ? "Could not read the Otari budget: " + status.error
     : "Otari per-user budget" +
       (status?.budgetName ? " '" + status.budgetName + "'" : "") +
       " for end user '" + user + "'" +
-      (status?.period ? ", resets " + status.period : "") + ".";
+      (status?.period ? ", " + status.period : "") +
+      (status?.resetsAt ? ", resets " + new Date(status.resetsAt).toLocaleString() : "") +
+      (status?.requests !== undefined ? " · " + status.requests + " requests so far" : "") +
+      ".";
   return (
     <span
       className={cx(
         "flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs",
-        exhausted ? "border-amber-500/40 bg-amber-500/10 text-amber-200" : "border-ink-700 bg-ink-900 text-ink-300"
+        exhausted || low ? "border-amber-500/40 bg-amber-500/10 text-amber-200" : "border-ink-700 bg-ink-900 text-ink-300"
       )}
       title={title}
     >
@@ -306,12 +312,13 @@ function EndUserBudget({ endUserBudgets }: { endUserBudgets: boolean }) {
           {max !== null && (
             <span className="h-1 w-10 overflow-hidden rounded-full bg-ink-700">
               <span
-                className={cx("block h-full rounded-full", exhausted ? "bg-amber-400" : "bg-emerald-400")}
+                className={cx("block h-full rounded-full", exhausted || low ? "bg-amber-400" : "bg-emerald-400")}
                 style={{ width: pctUsed + "%" }}
               />
             </span>
           )}
           {exhausted && <span className="font-semibold">exhausted</span>}
+          {low && <span className="font-semibold">low</span>}
         </span>
       ) : (
         <span className="text-ink-500">…</span>

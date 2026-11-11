@@ -13,6 +13,7 @@ import {
   OtariGatewayClient,
   buildOtariGuardrails,
   computeIdempotencyKey,
+  otariTargetReasoningEffort,
   otariGuardrailModeFromEnv
 } from "./otari-client";
 import {
@@ -524,6 +525,7 @@ export async function runInjectionArena(
 
   const guardrailMode = req.guardrailMode ?? otariGuardrailModeFromEnv();
   const guardrails = buildOtariGuardrails(guardrailMode);
+  const reasoning_effort = otariTargetReasoningEffort();
   const user = req.user?.trim() || undefined;
 
   const retries = Math.max(0, options.maxRetries ?? 3);
@@ -535,6 +537,7 @@ export async function runInjectionArena(
         model,
         temperature: 0,
         max_tokens: 256,
+        reasoning_effort,
         guardrails,
         user,
         // Fresh per run (runId), so the gateway never replays an earlier result
