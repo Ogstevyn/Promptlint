@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { Gauge, GitPullRequest, LayoutDashboard, SquareTerminal, Swords } from "lucide-react";
-import type { BenchmarkResponse, DemoPreset, FileScanResult, ModelPricing, OptimizeResponse, SourceLanguage } from "@promptlint/shared";
-import { api, API_BASE_URL } from "./lib/api";
+import { Gauge, GitPullRequest, LayoutDashboard, SquareTerminal, Swords, UserRound, Wallet } from "lucide-react";
+import type { BenchmarkResponse, DemoPreset, FileScanResult, ModelPricing, OptimizeResponse, OtariEndUserBudgetStatus, SourceLanguage } from "@promptlint/shared";
+import { api, API_BASE_URL, DEMO_USERS, getDemoUser, setDemoUser } from "./lib/api";
 import { cx } from "./components/ui";
 import { Playground } from "./screens/Playground";
 import { Benchmark } from "./screens/Benchmark";
@@ -155,7 +155,10 @@ export default function App() {
             ))}
           </nav>
 
-          <div className="ml-auto">
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {health && health !== "down" && health.otariConfigured && (
+              <EndUserBudget endUserBudgets={Boolean(health.otariFeatures?.endUserBudgets)} />
+            )}
             <GatewayStatus health={health} />
           </div>
         </div>
@@ -222,6 +225,97 @@ function GatewayStatus({ health }: { health: Health | null | "down" }) {
     >
       <span className="size-1.5 rounded-full bg-orange-400" />
       No Otari key · simulator only
+    </span>
+  );
+}
+
+/** Demo end-user picker and that user's Otari per-user budget (service key + OTARI_END_USERS=1) */
+function EndUserBudget({ endUserBudgets }: { endUserBudgets: boolean }) {
+  const [user, setUser] = useState(getDemoUser);
+  const [status, setStatus] = useState<OtariEndUserBudgetStatus | null>(null);
+
+  const refresh = useCallback(() => {
+    if (!endUserBudgets) return;
+    api.getOtariBudget(user).then(setStatus).catch(() => setStatus(null));
+  }, [user, endUserBudgets]);
+
+  useEffect(() => {
+    refresh();
+    const id = window.setInterval(refresh, 10_000);
+    return () => window.clearInterval(id);
+  }, [refresh]);
+
+  const pick = (u: string) => {
+    setDemoUser(u);
+    setUser(u);
+    setStatus(null);
+  };
+
+  if (!endUserBudgets) {
+    return (
+      <span
+        className="hidden items-center gap-1.5 rounded-full border border-ink-700 px-2.5 py-1 text-xs text-ink-500 lg:flex"
+        title="Per-user budgets are off: set OTARI_END_USERS=1 with an Otari service key to give each demo user their own budget."
+      >
+        <Wallet className="size-3.5" /> per-user budgets off
+      </span>
+    );
+  }
+
+  const spent = status?.spendUsd ?? 0;
+  const max = status?.maxBudgetUsd ?? null;
+  const pctUsed = max && max > 0 ? Math.min(100, (spent / max) * 100) : 0;
+  const exhausted = Boolean(status?.blocked) || (max !== null && spent >= max);
+  const fmt = (v: number) => "$" + (v < 0.01 ? v.toFixed(4) : v.toFixed(2));
+  const title = status?.error
+    ? "Could not read the Otari budget: " + status.error
+    : "Otari per-user budget" +
+      (status?.budgetName ? " '" + status.budgetName + "'" : "") +
+      " for end user '" + user + "'" +
+      (status?.period ? ", resets " + status.period : "") + ".";
+  return (
+    <span
+      className={cx(
+        "flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs",
+        exhausted ? "border-amber-500/40 bg-amber-500/10 text-amber-200" : "border-ink-700 bg-ink-900 text-ink-300"
+      )}
+      title={title}
+    >
+      <UserRound className="size-3.5" />
+      <select
+        value={user}
+        onChange={(e) => pick(e.target.value)}
+        className="bg-transparent font-medium text-ink-100 outline-none"
+        aria-label="Demo end user"
+      >
+        {DEMO_USERS.map((u) => (
+          <option key={u} value={u} className="bg-ink-900">
+            {u}
+          </option>
+        ))}
+      </select>
+      <Wallet className="size-3.5" />
+      {status?.error ? (
+        <span>budget unavailable</span>
+      ) : status && status.found === false ? (
+        <span>no spend yet</span>
+      ) : status ? (
+        <span className="flex items-center gap-1.5 tabular-nums">
+          {fmt(spent)}
+          {max !== null && <span className="text-ink-500">/ {fmt(max)}</span>}
+          {max !== null && (
+            <span className="h-1 w-10 overflow-hidden rounded-full bg-ink-700">
+              <span
+                className={cx("block h-full rounded-full", exhausted ? "bg-amber-400" : "bg-emerald-400")}
+                style={{ width: pctUsed + "%" }}
+              />
+            </span>
+          )}
+          {exhausted && <span className="font-semibold">exhausted</span>}
+        </span>
+      ) : (
+        <span className="text-ink-500">…</span>
+      )}
     </span>
   );
 }

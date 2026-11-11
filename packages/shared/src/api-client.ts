@@ -12,6 +12,8 @@ import {
   ModelPricing,
   OptimizeRequest,
   OptimizeResponse,
+  OtariEndUserBudgetStatus,
+  OtariFeatureConfig,
   PRCostReport,
   SourceLanguage
 } from "./types";
@@ -25,18 +27,22 @@ export interface LintCodeRequest {
 
 export class PromptLintApiClient {
   private baseUrl: string;
+  private extraHeaders?: () => Record<string, string>;
 
-  constructor(baseUrl = "http://localhost:4000") {
+  /** extraHeaders runs per request, e.g. to send the demo user as X-PromptLint-User */
+  constructor(baseUrl = "http://localhost:4000", options?: { extraHeaders?: () => Record<string, string> }) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.extraHeaders = options?.extraHeaders;
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
+      ...init,
       headers: {
         "Content-Type": "application/json",
-        ...(init?.headers || {})
-      },
-      ...init
+        ...(this.extraHeaders?.() ?? {}),
+        ...((init?.headers as Record<string, string> | undefined) || {})
+      }
     });
 
     if (!response.ok) {
@@ -47,8 +53,19 @@ export class PromptLintApiClient {
     return (await response.json()) as T;
   }
 
-  async health(): Promise<{ status: string; otariConfigured: boolean; otariBaseUrl: string; version: string }> {
+  async health(): Promise<{
+    status: string;
+    otariConfigured: boolean;
+    otariBaseUrl: string;
+    version: string;
+    otariFeatures?: OtariFeatureConfig;
+  }> {
     return this.request("/api/v1/health");
+  }
+
+  /** The end user's Otari per-user budget (needs a service key and OTARI_END_USERS=1 on the server) */
+  async getOtariBudget(user: string): Promise<OtariEndUserBudgetStatus> {
+    return this.request<OtariEndUserBudgetStatus>(`/api/v1/otari/budget?user=${encodeURIComponent(user)}`);
   }
 
   async getPresets(): Promise<DemoPreset[]> {

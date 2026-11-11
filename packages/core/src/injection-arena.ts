@@ -5,9 +5,16 @@ import {
   InjectionArenaRequest,
   InjectionArenaResponse,
   InjectionArenaSideSummary,
-  InjectionAttackInfo
+  InjectionAttackInfo,
+  OtariGuardrailMode
 } from "@promptlint/shared";
-import { OtariChatResponse, OtariGatewayClient, computeIdempotencyKey } from "./otari-client";
+import {
+  OtariChatResponse,
+  OtariGatewayClient,
+  buildOtariGuardrails,
+  computeIdempotencyKey,
+  otariGuardrailModeFromEnv
+} from "./otari-client";
 import {
   DEFAULT_BENCHMARK_ORIGINAL_MODEL,
   compressAndHardenPrompt,
@@ -315,6 +322,8 @@ export interface ArenaSideAttempt {
   succeeded: boolean;
   simulated: boolean;
   gatewayError?: string;
+  guardrails?: OtariChatResponse["guardrails"];
+  blocked?: OtariChatResponse["blocked"];
 }
 
 /**
@@ -325,14 +334,23 @@ export interface ArenaSideAttempt {
 export function summarizeArenaSide(attempts: ArenaSideAttempt[]): InjectionArenaSideSummary {
   const live = attempts.filter((a) => !a.simulated);
   const failedCalls = attempts.filter((a) => a.simulated && a.gatewayError).length;
-  const pool = live.length > 0 ? live : attempts;
+  // A budget refusal never reached the model or the guardrail: it says nothing about the attack
+  const pool = (live.length > 0 ? live : attempts).filter((a) => a.blocked?.by !== "budget");
   const succeeded = pool.filter((a) => a.succeeded).length;
+  const verdicts = attempts.map((a) => a.guardrails?.[0]);
   return {
     attempted: attempts.length,
     liveAttempts: live.length,
     failedCalls,
     succeeded,
-    successRatePct: pool.length > 0 ? Math.round((succeeded / pool.length) * 1000) / 10 : 0
+    successRatePct: pool.length > 0 ? Math.round((succeeded / pool.length) * 1000) / 10 : 0,
+    guardrailEvaluated: verdicts.filter((v) => v?.status === "evaluated").length,
+    guardrailFlagged:
+      verdicts.filter((v) => v?.valid === false).length +
+      // A block refusal may carry no header entry; it was still flagged
+      attempts.filter((a) => a.blocked?.by === "guardrail" && a.guardrails?.[0]?.valid !== false).length,
+    guardrailBlocked: attempts.filter((a) => a.blocked?.by === "guardrail").length,
+    budgetBlocked: attempts.filter((a) => a.blocked?.by === "budget").length
   };
 }
 
@@ -375,7 +393,10 @@ function toAttempt(
     outputTokens: res.outputTokens,
     otariRequestId: res.otariRequestId,
     idempotentReplayed: res.idempotentReplayed,
-    ...(res.gatewayCostUsd !== undefined ? { gatewayCostUsd: res.gatewayCostUsd } : {})
+    ...(res.gatewayCostUsd !== undefined ? { gatewayCostUsd: res.gatewayCostUsd } : {}),
+    ...(res.routing ? { routing: res.routing } : {}),
+    ...(res.guardrails ? { guardrails: res.guardrails } : {}),
+    ...(res.blocked ? { blocked: res.blocked } : {})
   };
 }
 
@@ -501,6 +522,10 @@ export async function runInjectionArena(
     { attackIndex, side: "hardened" as const, ...renderHardened(payloads[attackIndex]) }
   ]);
 
+  const guardrailMode = req.guardrailMode ?? otariGuardrailModeFromEnv();
+  const guardrails = buildOtariGuardrails(guardrailMode);
+  const user = req.user?.trim() || undefined;
+
   const retries = Math.max(0, options.maxRetries ?? 3);
   const baseDelay = Math.max(0, options.retryDelayMs ?? 1500);
   const attempts = await runPool(jobs, concurrency, async (job) => {
@@ -510,6 +535,8 @@ export async function runInjectionArena(
         model,
         temperature: 0,
         max_tokens: 256,
+        guardrails,
+        user,
         // Fresh per run (runId), so the gateway never replays an earlier result
         idempotencyKey: computeIdempotencyKey({
           runId,
@@ -563,6 +590,9 @@ export async function runInjectionArena(
     hardenedInputEscaped: escapeInput,
     hardenedDelivery: delivery,
     ...(targetVariable ? { targetVariable } : {}),
+    guardrailMode,
+    ...(guardrails ? { guardrailProfile: guardrails[0].profile } : {}),
+    guardrailStatus: summarizeGuardrailStatus(guardrailMode, attempts),
     summary: {
       original: summarizeArenaSide(results.map((r) => r.original)),
       hardened: summarizeArenaSide(results.map((r) => r.hardened))
@@ -573,4 +603,17 @@ export async function runInjectionArena(
     durationMs: Date.now() - startedAt,
     results
   };
+}
+
+/** Did the Otari guardrail actually run on this run's calls? */
+export function summarizeGuardrailStatus(
+  mode: OtariGuardrailMode,
+  attempts: Array<Pick<ArenaSideAttempt, "guardrails" | "blocked" | "simulated">>
+): InjectionArenaResponse["guardrailStatus"] {
+  if (mode === "off") return "off";
+  const live = attempts.filter((a) => !a.simulated);
+  if (live.length === 0) return "unavailable";
+  const ran = live.filter((a) => a.guardrails?.[0]?.status === "evaluated" || a.blocked?.by === "guardrail").length;
+  if (ran === live.length) return "evaluated";
+  return ran === 0 ? "unavailable" : "mixed";
 }

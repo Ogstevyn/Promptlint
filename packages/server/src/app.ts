@@ -9,6 +9,7 @@ import {
   benchmarkPromptsViaOtari,
   listInjectionAttacks,
   optimizePromptAndCode,
+  otariFeatureConfig,
   runInjectionArena,
   scanCodeString
 } from "@promptlint/core";
@@ -26,7 +27,7 @@ function setCorsHeaders(res: http.ServerResponse) {
   );
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, Otari-Key, Idempotency-Key"
+    "Content-Type, Authorization, Otari-Key, Idempotency-Key, X-PromptLint-User"
   );
 }
 
@@ -53,6 +54,19 @@ function readJsonBody(req: http.IncomingMessage): Promise<any> {
   });
 }
 
+/** The end user a request acts for: body.user or the X-PromptLint-User header (sanitised) */
+function resolveUser(req: http.IncomingMessage, body?: any): string | undefined {
+  const raw = (typeof body?.user === "string" ? body.user : undefined) ?? req.headers["x-promptlint-user"];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof value !== "string") return undefined;
+  const cleaned = value.trim().slice(0, 64);
+  return /^[A-Za-z0-9_.:@-]+$/.test(cleaned) ? cleaned : undefined;
+}
+
+function guardrailModeOf(value: unknown): "off" | "monitor" | "block" | undefined {
+  return value === "off" || value === "monitor" || value === "block" ? value : undefined;
+}
+
 export function createPromptLintServer(): http.Server {
   return http.createServer(async (req, res) => {
     setCorsHeaders(res);
@@ -76,6 +90,7 @@ export function createPromptLintServer(): http.Server {
           version: "1.0.0",
           otariConfigured: client.isConfigured(),
           otariBaseUrl: client.getBaseUrl(),
+          otariFeatures: otariFeatureConfig(),
           endpoints: [
             "GET  /api/v1/health",
             "GET  /api/v1/presets",
@@ -88,9 +103,20 @@ export function createPromptLintServer(): http.Server {
             "POST /api/v1/optimize",
             "POST /api/v1/benchmark",
             "GET  /api/v1/injection-arena/attacks",
-            "POST /api/v1/injection-arena"
+            "POST /api/v1/injection-arena",
+            "GET  /api/v1/otari/budget?user=..."
           ]
         });
+      }
+
+      // Otari per-user budget of an end user (service key + OTARI_END_USERS=1)
+      if (req.method === "GET" && pathname === "/api/v1/otari/budget") {
+        const user = resolveUser(req, { user: urlObj.searchParams.get("user") ?? undefined });
+        const client = new OtariGatewayClient();
+        if (!user) {
+          return sendJson(res, 400, { error: "Query `user` is required ([A-Za-z0-9_.:@-], up to 64 characters)" });
+        }
+        return sendJson(res, 200, await client.getEndUserBudgetStatus(user));
       }
 
       // 2. Demo Presets for Frontend Playground
@@ -167,7 +193,8 @@ export function createPromptLintServer(): http.Server {
           filename: body.filename || "playground.ts",
           language: body.language,
           targetModel: body.targetModel,
-          monthlyVolume: body.monthlyVolume ? Number(body.monthlyVolume) : 100_000
+          monthlyVolume: body.monthlyVolume ? Number(body.monthlyVolume) : 100_000,
+          user: resolveUser(req, body)
         });
         telemetryStore.recordOptimization(optimized.tokenReductionPercentage);
         return sendJson(res, 200, optimized);
@@ -190,7 +217,9 @@ export function createPromptLintServer(): http.Server {
           // Omitted models fall back to the core defaults (Otari-catalog Mistral pair)
           originalModel: body.originalModel || undefined,
           optimizedModel: body.optimizedModel || undefined,
-          monthlyVolume: body.monthlyVolume ? Number(body.monthlyVolume) : 100_000
+          monthlyVolume: body.monthlyVolume ? Number(body.monthlyVolume) : 100_000,
+          user: resolveUser(req, body),
+          guardrailMode: guardrailModeOf(body.guardrailMode)
         });
         for (const run of [benchmark.original, benchmark.optimized]) {
           if (!run.simulated && !run.idempotentReplayed) {
@@ -239,7 +268,9 @@ export function createPromptLintServer(): http.Server {
               body.variableValues && typeof body.variableValues === "object" ? body.variableValues : undefined,
             concurrency: body.concurrency ? Number(body.concurrency) : undefined,
             escapeInput: body.escapeInput === false ? false : undefined,
-            delivery: body.delivery === "single-message" ? "single-message" : undefined
+            delivery: body.delivery === "single-message" ? "single-message" : undefined,
+            guardrailMode: guardrailModeOf(body.guardrailMode),
+            user: resolveUser(req, body)
           });
         } catch (err: any) {
           // Bad attack id, unknown target variable and the like are caller errors

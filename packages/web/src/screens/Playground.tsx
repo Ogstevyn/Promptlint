@@ -24,7 +24,9 @@ import {
   CostSourceBadge,
   GatewayError,
   OptimizerSourceBadge,
+  OtariBlockedNotice,
   ReplayBadge,
+  RoutingBadge,
   RunModeBadge,
   SeverityBadge,
   severityStyles,
@@ -473,6 +475,13 @@ function OptimizeSummary({
     >
       <div className="flex flex-col gap-4">
         <GatewayError error={t.gatewayError} />
+        <OtariBlockedNotice blocked={t.blocked} />
+        {t.routing && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] text-ink-500">Optimizer model served by</span>
+            <RoutingBadge routing={t.routing} />
+          </div>
+        )}
         <div className="grid grid-cols-3 gap-4">
           <Stat label="Prompt tokens" value={`${result.originalTokens} → ${result.optimizedTokens}`} />
           <Stat label="Change" value={change.value} tone={change.tone} sub={change.sub} />

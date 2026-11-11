@@ -10,7 +10,7 @@ import type {
 } from "@promptlint/shared";
 import { api, errorMessage } from "../lib/api";
 import { ms, usd } from "../lib/format";
-import { GatewayError, LiveBadge, SimulatedBadge } from "../components/honesty";
+import { GatewayError, GuardrailBadge, LiveBadge, OtariBlockedNotice, RoutingBadge, SimulatedBadge } from "../components/honesty";
 import { Badge, Button, Card, EmptyState, ErrorBanner, Segmented, Stat, cx } from "../components/ui";
 
 export type ArenaDelivery = "system-split" | "single-message";
@@ -20,6 +20,8 @@ export interface ArenaState {
   model: string;
   /** How the hardened side is sent; system-split is what the generated code ships */
   delivery?: ArenaDelivery;
+  /** Otari guardrail on every call: off, monitor (verdict only) or block (Otari refuses flagged payloads) */
+  guardrailMode?: "off" | "monitor" | "block";
   result: InjectionArenaResponse | null;
 }
 
@@ -52,7 +54,8 @@ export function Arena({
       const res = await api.runInjectionArena({
         presetId,
         model: state.model || undefined,
-        delivery: state.delivery ?? "system-split"
+        delivery: state.delivery ?? "system-split",
+        guardrailMode: state.guardrailMode ?? "monitor"
       });
       setState((s) => ({ ...s, presetId, result: res }));
       setFilter("all");
@@ -65,12 +68,12 @@ export function Arena({
 
   return (
     <div className="flex flex-col gap-4">
-      <Card bodyClassName="flex flex-col gap-4 p-4 lg:flex-row lg:items-end">
+      <Card bodyClassName="flex flex-col gap-4 p-4 lg:flex-row lg:flex-wrap lg:items-end">
         <SelectField
           label="Demo preset"
           value={presetId ?? ""}
           onChange={(v) => setState((s) => ({ ...s, presetId: v, result: null }))}
-          className="flex-1"
+          className="flex-1 lg:min-w-[18rem]"
         >
           {presets.length === 0 && <option value="">Loading presets…</option>}
           {presets.map((p) => (
@@ -101,6 +104,23 @@ export function Arena({
             options={[
               { value: "system-split", label: "System + user" },
               { value: "single-message", label: "One message" }
+            ]}
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <span
+            className="text-[11px] font-medium uppercase tracking-wide text-ink-400"
+            title="Otari's prompt-injection guardrail on every call. Monitor reports a verdict; Block lets Otari refuse flagged payloads before the model sees them."
+          >
+            Otari guardrail
+          </span>
+          <Segmented<"off" | "monitor" | "block">
+            value={state.guardrailMode ?? "monitor"}
+            onChange={(v) => setState((s) => ({ ...s, guardrailMode: v, result: null }))}
+            options={[
+              { value: "off", label: "Off" },
+              { value: "monitor", label: "Monitor" },
+              { value: "block", label: "Block" }
             ]}
           />
         </div>
@@ -255,6 +275,7 @@ function Scoreboard({ result }: { result: InjectionArenaResponse }) {
         </div>
 
         <div className={cx("text-[15px] font-semibold", verdictTone)}>{verdict.text}</div>
+        <GuardrailSummary result={result} />
 
         <div className="grid grid-cols-2 gap-x-6 gap-y-3 border-t border-ink-800 pt-3 sm:grid-cols-4">
           <Stat label="Model" value={<span className="font-mono text-[13px]">{result.model}</span>} />
@@ -272,6 +293,40 @@ function Scoreboard({ result }: { result: InjectionArenaResponse }) {
         </div>
       </div>
     </Card>
+  );
+}
+
+function GuardrailSummary({ result }: { result: InjectionArenaResponse }) {
+  if (result.guardrailMode === "off" || result.mode === "simulated") return null;
+  const { original, hardened } = result.summary;
+  const profile = result.guardrailProfile ?? "prompt-injection";
+  const budget = original.budgetBlocked + hardened.budgetBlocked;
+  if (result.guardrailStatus === "unavailable") {
+    return (
+      <div className="flex items-start gap-2 rounded-lg border border-ink-700 bg-ink-850 px-3 py-2 text-xs text-ink-300">
+        <ShieldAlert className="mt-px size-3.5 shrink-0 text-ink-500" />
+        <span>
+          Otari guardrail <code className="font-mono">{profile}</code> was requested on every call ({result.guardrailMode}) but did not run:
+          no guardrail is configured for this Otari organization (Otari-Guardrails: not_configured).
+          {budget > 0 && ` ${budget} call${budget === 1 ? "" : "s"} refused by an Otari budget.`}
+        </span>
+      </div>
+    );
+  }
+  const n = original.attempted;
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
+      <ShieldCheck className="mt-px size-3.5 shrink-0 text-cyan-300" />
+      <span>
+        <span className="font-semibold">Otari guardrail <code className="font-mono">{profile}</code> ({result.guardrailMode}): </span>
+        flagged {original.guardrailFlagged}/{n} payloads on the original side and {hardened.guardrailFlagged}/{n} on the hardened side
+        {result.guardrailMode === "block"
+          ? `, and refused ${original.guardrailBlocked + hardened.guardrailBlocked} calls before they reached the model.`
+          : ". Switch to Block to have Otari refuse them."}
+        {result.guardrailStatus === "mixed" && " Some calls got no verdict."}
+        {budget > 0 && ` ${budget} call${budget === 1 ? "" : "s"} refused by an Otari budget.`}
+      </span>
+    </div>
   );
 }
 
@@ -308,6 +363,8 @@ function SideScore({
       <div className="mt-1.5 text-xs text-ink-500">
         {simulated ? "simulated" : `${s.successRatePct}% success rate`}
         {s.failedCalls > 0 && ` · ${s.failedCalls} failed call${s.failedCalls === 1 ? "" : "s"} excluded`}
+        {s.guardrailBlocked > 0 && ` · ${s.guardrailBlocked} blocked by Otari guardrail`}
+        {s.budgetBlocked > 0 && ` · ${s.budgetBlocked} refused by budget (excluded)`}
       </div>
     </div>
   );
@@ -366,6 +423,20 @@ function AttackGrid({
 }
 
 function Outcome({ a }: { a: InjectionArenaAttempt }) {
+  if (a.blocked?.by === "guardrail") {
+    return (
+      <Badge tone="cyan" icon={<ShieldCheck className="size-3" />} className="font-semibold" title={a.blocked.detail}>
+        blocked by Otari
+      </Badge>
+    );
+  }
+  if (a.blocked?.by === "budget") {
+    return (
+      <Badge tone="amber" title={a.blocked.detail}>
+        budget refused
+      </Badge>
+    );
+  }
   if (a.simulated && a.gatewayError) {
     return (
       <Badge tone="orange" title={a.gatewayError}>
@@ -452,6 +523,13 @@ function AttemptDetail({ label, a, accent }: { label: string; a: InjectionArenaA
         </span>
       </div>
       <GatewayError error={a.gatewayError} />
+      <OtariBlockedNotice blocked={a.blocked} />
+      {(a.guardrails || a.routing) && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <GuardrailBadge results={a.guardrails} />
+          <RoutingBadge routing={a.routing} />
+        </div>
+      )}
       <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-[12px] leading-5 text-ink-200">
         {a.output || <span className="text-ink-500">(empty)</span>}
       </pre>

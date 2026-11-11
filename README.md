@@ -98,7 +98,21 @@ With `OTARI_API_KEY` set in `.env`, optimize, benchmark and arena calls go live 
 
 Without a key (or with `PROMPTLINT_OFFLINE=1`, which the tests use), a deterministic simulator answers instead, and every result is flagged `simulated: true`. A failed live call also falls back to the simulator and reports `gatewayError`. Token counts use the `o200k_base` BPE tokenizer.
 
-### 8. Start the Web UI
+### 8. Otari features PromptLint uses
+
+| Otari feature | Where PromptLint uses it | How to see it |
+| :--- | :--- | :--- |
+| **Open-weight models in distinct roles** | `alibaba/qwen-3.5-35b-a3b` rewrites prompts (optimizer); `mistralai/ministral-8b-latest` is the cheap model calls are moved to; `mistralai/mistral-large-latest` is the baseline and the Arena's target | Playground (Optimizer card), Benchmark |
+| **Model routing and fallbacks** | Any model setting (`OTARI_OPTIMIZER_MODEL`, `OTARI_BENCHMARK_*_MODEL`, `OTARI_ARENA_MODEL`) can name an Otari routing policy. Every call reads `Otari-Provider`, `Otari-Model`, `Otari-Attempt-Count` and `Otari-Fallback`, prices the call by the model that actually served it, and shows a fallback badge | Benchmark and Arena cards, Playground optimizer |
+| **Guardrails** | Every optimize, benchmark and arena call sends Otari's `guardrails` field (`prompt-injection`, `OTARI_GUARDRAIL_MODE`). The verdict from `Otari-Guardrails` is shown per call; in **Block** mode a `403 guardrail_violation` is reported as "blocked by Otari", never simulated. The Arena counts how many attack payloads Otari's guardrail flagged and blocked, beside what PromptLint's own hardening stopped | Injection Arena (Otari guardrail: Off / Monitor / Block) |
+| **Per-user budgets** | With an Otari service key and `OTARI_END_USERS=1`, each web demo user (alice, bob, carol) is sent as Otari's `user`, so Otari bills and caps each one separately. The header shows the user's spend against their budget (`GET /end-users`) | Header user picker and budget meter |
+| **Budgets and spending limits** | A `403 budget_exceeded` from any Otari budget (per-user, key or workspace ceiling) is shown with its scope (`Otari-Budget-Scope`) and reset time (`Retry-After`) instead of falling back to the simulator | Any screen, once a budget is exhausted |
+| **Idempotent replay** | Deterministic `Idempotency-Key` per request; `Otari-Idempotent-Replayed` is shown with the real latency | Benchmark "Run again" |
+| **Real per-call cost** | `usage.cost_usd` drives the benchmark's cost figures (`costSource: "gateway"`) | Benchmark |
+
+Routing policies, guardrail definitions, budgets and service keys are created in the Otari dashboard (their API routes take a dashboard session, not an API key); PromptLint uses them on every call.
+
+### 9. Start the Web UI
 ```bash
 npm run dev:web
 ```
