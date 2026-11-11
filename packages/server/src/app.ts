@@ -238,7 +238,8 @@ export function createPromptLintServer(): http.Server {
             variableValues:
               body.variableValues && typeof body.variableValues === "object" ? body.variableValues : undefined,
             concurrency: body.concurrency ? Number(body.concurrency) : undefined,
-            escapeInput: body.escapeInput === false ? false : undefined
+            escapeInput: body.escapeInput === false ? false : undefined,
+            delivery: body.delivery === "single-message" ? "single-message" : undefined
           });
         } catch (err: any) {
           // Bad attack id, unknown target variable and the like are caller errors

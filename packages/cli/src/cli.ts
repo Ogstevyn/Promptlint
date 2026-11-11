@@ -272,13 +272,13 @@ async function runCiReportCommand(args: string[]) {
   }
 }
 
-const ARENA_VALUE_FLAGS = ["--model", "--target", "--attacks", "--hardened"];
+const ARENA_VALUE_FLAGS = ["--model", "--target", "--attacks", "--hardened", "--delivery"];
 
 async function runArenaCommand(args: string[]) {
   const targetFile = args.find((a, i) => !a.startsWith("--") && !ARENA_VALUE_FLAGS.includes(args[i - 1]));
   if (!targetFile) {
     console.error(
-      "Usage: promptlint arena <file> [--model <model>] [--target <variable>] [--attacks id1,id2] [--hardened <file>] [--no-escape] [--json]"
+      "Usage: promptlint arena <file> [--model <model>] [--target <variable>] [--attacks id1,id2] [--hardened <file>] [--delivery split|single] [--no-escape] [--json]"
     );
     process.exit(1);
   }
@@ -314,7 +314,8 @@ async function runArenaCommand(args: string[]) {
     model: getFlagValue(args, "--model"),
     targetVariable: getFlagValue(args, "--target"),
     attacks,
-    escapeInput: !args.includes("--no-escape")
+    escapeInput: !args.includes("--no-escape"),
+    delivery: getFlagValue(args, "--delivery") === "single" ? "single-message" : "system-split"
   });
 
   if (isJson) {
@@ -332,7 +333,11 @@ async function runArenaCommand(args: string[]) {
   console.log(`  Model:    ${r.model}`);
   console.log(`  Canary:   ${r.canary}`);
   console.log(`  Injected: ${r.targetVariable ? `into variable '${r.targetVariable}'` : "appended as input"}`);
-  console.log(`  Hardened: input ${r.hardenedInputEscaped ? "XML-escaped (as the generated code does)" : "NOT escaped (--no-escape)"}`);
+  console.log(
+    `  Hardened: ${r.hardenedDelivery === "system-split" ? "instructions as system message, input as user message" : "one user message (--delivery single)"}; input ${
+      r.hardenedInputEscaped ? "XML-escaped" : "NOT escaped (--no-escape)"
+    }`
+  );
   for (const e of r.gatewayErrors) console.log(`  ${COLORS.yellow}Gateway error:${COLORS.reset} ${e}`);
   console.log("");
 
@@ -387,7 +392,7 @@ async function main() {
       console.log("  promptlint scan [dir|file] [--volume 100000] [--json]");
       console.log("  promptlint optimize <file> [--write] [--model gpt-4o-mini]");
       console.log("  promptlint ci-report [dir|file] [--output report.md] [--volume 100000] [--post-pr]");
-      console.log("  promptlint arena <file> [--model <model>] [--target <variable>] [--attacks id1,id2] [--no-escape] [--json]");
+      console.log("  promptlint arena <file> [--model <model>] [--target <variable>] [--attacks id1,id2] [--delivery split|single] [--no-escape] [--json]");
       break;
   }
 }
