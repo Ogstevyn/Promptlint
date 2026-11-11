@@ -1,4 +1,4 @@
-# PromptLint
+<h1 align="center"><img src="brand/logo-wordmark.png" alt="PromptLint" width="640" /></h1>
 
 **Static & Semantic Linter, Prompt Optimizer, and CI Cost Reporter built on Mozilla's Otari LLM Gateway.**
 
