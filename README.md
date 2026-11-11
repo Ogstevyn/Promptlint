@@ -77,9 +77,9 @@ npm run ci-report -- ./examples/vulnerable-app
 ### 5. Red-team a Prompt in the Injection Arena
 ```bash
 node packages/cli/dist/cli.js arena ./examples/vulnerable-app/support-triage.ts
-# --model <model>  --target <variable>  --attacks id1,id2  --json
+# --model <model>  --target <variable>  --attacks id1,id2  --no-escape  --json
 ```
-Fires a fixed corpus of 20 prompt-injection payloads (instruction override, fake system tags, `</user_input>` escapes, role-play, base64, translated requests and more) at the original prompt and at its PromptLint-hardened version, through the same model via Otari. Each payload asks the model to print a fresh per-run canary (`PWNED-<hex>`) without spelling it out, so an attack only counts when the model actually follows it. Without `OTARI_API_KEY` the run is simulated and labelled as such. Also available as `POST /api/v1/injection-arena` and the **Injection Arena** tab in the web UI.
+Fires a fixed corpus of 20 prompt-injection payloads (instruction override, fake system tags, `</user_input>` escapes, role-play, base64, translated requests and more) at the original prompt and at its PromptLint-hardened version, through the same model via Otari. Each payload asks the model to print a fresh per-run canary (`PWNED-<hex>`) without spelling it out, so an attack only counts when the model actually follows it. The hardened side receives the input XML-escaped, exactly as PromptLint's generated code sends it (`--no-escape` measures the prompt text alone). Without `OTARI_API_KEY` the run is simulated and labelled as such. Also available as `POST /api/v1/injection-arena` and the **Injection Arena** tab in the web UI.
 
 ### 6. Start the Backend API Server
 ```bash

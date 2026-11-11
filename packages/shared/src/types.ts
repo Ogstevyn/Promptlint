@@ -320,6 +320,8 @@ export interface InjectionArenaRequest {
   variableValues?: Record<string, string>;
   /** Parallel gateway calls (1-8, default 4) */
   concurrency?: number;
+  /** XML-escape the payload on the hardened side, as the generated code does (default true) */
+  escapeInput?: boolean;
 }
 
 /** One model call in the arena (an attack against one side) */
@@ -379,6 +381,8 @@ export interface InjectionArenaResponse {
   hardenedPrompt: string;
   /** "provided" when the caller passed the hardened prompt, "rules" when built by the rule-based optimizer */
   hardenedSource: "provided" | "rules";
+  /** true when the payload was XML-escaped on the hardened side, as PromptLint's generated code does */
+  hardenedInputEscaped: boolean;
   /** Template variable the payload was injected into (undefined when the prompt had none and the payload was appended) */
   targetVariable?: string;
   summary: {

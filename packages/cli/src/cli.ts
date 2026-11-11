@@ -278,7 +278,7 @@ async function runArenaCommand(args: string[]) {
   const targetFile = args.find((a, i) => !a.startsWith("--") && !ARENA_VALUE_FLAGS.includes(args[i - 1]));
   if (!targetFile) {
     console.error(
-      "Usage: promptlint arena <file> [--model <model>] [--target <variable>] [--attacks id1,id2] [--hardened <file>] [--json]"
+      "Usage: promptlint arena <file> [--model <model>] [--target <variable>] [--attacks id1,id2] [--hardened <file>] [--no-escape] [--json]"
     );
     process.exit(1);
   }
@@ -313,7 +313,8 @@ async function runArenaCommand(args: string[]) {
     hardenedPrompt,
     model: getFlagValue(args, "--model"),
     targetVariable: getFlagValue(args, "--target"),
-    attacks
+    attacks,
+    escapeInput: !args.includes("--no-escape")
   });
 
   if (isJson) {
@@ -331,6 +332,7 @@ async function runArenaCommand(args: string[]) {
   console.log(`  Model:    ${r.model}`);
   console.log(`  Canary:   ${r.canary}`);
   console.log(`  Injected: ${r.targetVariable ? `into variable '${r.targetVariable}'` : "appended as input"}`);
+  console.log(`  Hardened: input ${r.hardenedInputEscaped ? "XML-escaped (as the generated code does)" : "NOT escaped (--no-escape)"}`);
   for (const e of r.gatewayErrors) console.log(`  ${COLORS.yellow}Gateway error:${COLORS.reset} ${e}`);
   console.log("");
 
@@ -385,7 +387,7 @@ async function main() {
       console.log("  promptlint scan [dir|file] [--volume 100000] [--json]");
       console.log("  promptlint optimize <file> [--write] [--model gpt-4o-mini]");
       console.log("  promptlint ci-report [dir|file] [--output report.md] [--volume 100000] [--post-pr]");
-      console.log("  promptlint arena <file> [--model <model>] [--target <variable>] [--attacks id1,id2] [--json]");
+      console.log("  promptlint arena <file> [--model <model>] [--target <variable>] [--attacks id1,id2] [--no-escape] [--json]");
       break;
   }
 }

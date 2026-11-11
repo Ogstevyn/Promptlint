@@ -90,6 +90,8 @@ export const run = (q: string) => client.chat.completions.create({
     assert.equal(body.mode, "simulated");
     assert.equal(body.simulated, true);
     assert.equal(body.targetVariable, "customerMessage");
+    assert.equal(body.hardenedSource, "rules");
+    assert.equal(body.hardenedInputEscaped, true);
     assert.equal(body.results.length, 2);
     assert.match(body.canary, /^PWNED-[0-9a-f]{8}$/);
     assert.ok(body.hardenedPrompt.includes("<user_input>${customerMessage}</user_input>"));

@@ -8,7 +8,7 @@ import {
   InjectionAttackInfo
 } from "@promptlint/shared";
 import { OtariChatResponse, OtariGatewayClient, computeIdempotencyKey } from "./otari-client";
-import { DEFAULT_BENCHMARK_ORIGINAL_MODEL, compressAndHardenPrompt } from "./optimizer";
+import { DEFAULT_BENCHMARK_ORIGINAL_MODEL, compressAndHardenPrompt, escapeUntrustedInput } from "./optimizer";
 
 /**
  * Injection Arena: a fixed corpus of prompt-injection payloads run against the
@@ -387,7 +387,8 @@ export function isTransientGatewayError(error?: string): boolean {
 /**
  * Run every attack against the original and the hardened prompt with the same model.
  * Both sides get the payload in the same place (the target template variable) and are
- * sent the same way (one user message), so the prompt text is the only difference.
+ * sent the same way (one user message). The differences are the prompt text and, unless
+ * escapeInput is false, the XML-escaping PromptLint's generated code applies to the input.
  */
 export async function runInjectionArena(
   req: InjectionArenaRequest & { originalPrompt: string },
@@ -435,7 +436,10 @@ export async function runInjectionArena(
   }
 
   const benign = req.variableValues ?? {};
-  const render = (template: string, payload: string, side: "original" | "hardened"): string => {
+  // The hardened side gets the input the way PromptLint's generated code sends it: escaped
+  const escapeInput = req.escapeInput !== false;
+  const render = (template: string, rawPayload: string, side: "original" | "hardened"): string => {
+    const payload = side === "hardened" && escapeInput ? escapeUntrustedInput(rawPayload) : rawPayload;
     if (targetVariable) {
       return fillPromptTemplate(template, { ...benign, [targetVariable]: payload });
     }
@@ -519,6 +523,7 @@ export async function runInjectionArena(
     originalPrompt,
     hardenedPrompt,
     hardenedSource,
+    hardenedInputEscaped: escapeInput,
     ...(targetVariable ? { targetVariable } : {}),
     summary: {
       original: summarizeArenaSide(results.map((r) => r.original)),
