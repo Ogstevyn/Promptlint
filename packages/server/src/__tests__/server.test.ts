@@ -79,4 +79,31 @@ export const run = (q: string) => client.chat.completions.create({
     assert.equal(optData.otariTelemetry.routedViaOtari, false);
     assert.equal(optData.optimizerSource, "rules");
   });
+  it("POST /api/v1/injection-arena runs a preset offline and labels it simulated", async () => {
+    const res = await fetch(`${baseUrl}/api/v1/injection-arena`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ presetId: "ts-support-triage", attacks: ["direct-override", "close-user-input-tag"] })
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as any;
+    assert.equal(body.mode, "simulated");
+    assert.equal(body.simulated, true);
+    assert.equal(body.targetVariable, "customerMessage");
+    assert.equal(body.results.length, 2);
+    assert.match(body.canary, /^PWNED-[0-9a-f]{8}$/);
+    assert.ok(body.hardenedPrompt.includes("<user_input>${customerMessage}</user_input>"));
+
+    const attacks = (await (await fetch(`${baseUrl}/api/v1/injection-arena/attacks`)).json()) as any[];
+    assert.ok(attacks.length >= 18);
+
+    const bad = await fetch(`${baseUrl}/api/v1/injection-arena`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ originalPrompt: "Hi ${x}", attacks: ["no-such-attack"] })
+    });
+    assert.equal(bad.status, 400);
+    const missing = await fetch(`${baseUrl}/api/v1/injection-arena`, { method: "POST", body: "{}" });
+    assert.equal(missing.status, 400);
+  });
 });

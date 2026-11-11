@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Gauge, GitPullRequest, LayoutDashboard, SquareTerminal } from "lucide-react";
+import { Gauge, GitPullRequest, LayoutDashboard, SquareTerminal, Swords } from "lucide-react";
 import type { BenchmarkResponse, DemoPreset, FileScanResult, ModelPricing, OptimizeResponse, SourceLanguage } from "@promptlint/shared";
 import { api, API_BASE_URL } from "./lib/api";
 import { cx } from "./components/ui";
@@ -7,12 +7,14 @@ import { Playground } from "./screens/Playground";
 import { Benchmark } from "./screens/Benchmark";
 import { Reports } from "./screens/Reports";
 import { Dashboard } from "./screens/Dashboard";
+import { Arena, type ArenaState } from "./screens/Arena";
 
-export type TabId = "playground" | "benchmark" | "reports" | "dashboard";
+export type TabId = "playground" | "benchmark" | "arena" | "reports" | "dashboard";
 
 const TABS: Array<{ id: TabId; label: string; icon: typeof Gauge }> = [
   { id: "playground", label: "Playground", icon: SquareTerminal },
   { id: "benchmark", label: "Benchmark", icon: Gauge },
+  { id: "arena", label: "Injection Arena", icon: Swords },
   { id: "reports", label: "PR Reports", icon: GitPullRequest },
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard }
 ];
@@ -75,6 +77,7 @@ export default function App() {
     optimizedModel: ""
   });
   const [benchRuns, setBenchRuns] = useState<BenchmarkRun[]>([]);
+  const [arena, setArena] = useState<ArenaState>({ presetId: null, model: "", result: null });
 
   const setTab = useCallback((t: TabId) => {
     setTabState(t);
@@ -174,6 +177,7 @@ export default function App() {
             goToPlayground={() => setTab("playground")}
           />
         )}
+        {tab === "arena" && <Arena presets={presets} models={models} state={arena} setState={setArena} />}
         {tab === "reports" && <Reports />}
         {tab === "dashboard" && <Dashboard />}
       </main>

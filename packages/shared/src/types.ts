@@ -278,3 +278,115 @@ export interface CreatePRReportRequest {
   baseBranch?: string;
   headBranch?: string;
 }
+
+/** Family of prompt-injection technique an Injection Arena attack uses */
+export type InjectionTechnique =
+  | "instruction-override"
+  | "authority-claim"
+  | "fake-system-tag"
+  | "tag-escape"
+  | "delimiter"
+  | "role-play"
+  | "encoding"
+  | "translation"
+  | "payload-splitting"
+  | "output-hijack"
+  | "completion-priming"
+  | "indirect";
+
+/** Static description of one attack in the Injection Arena corpus */
+export interface InjectionAttackInfo {
+  id: string;
+  name: string;
+  technique: InjectionTechnique;
+  description: string;
+}
+
+/** Body for POST /api/v1/injection-arena */
+export interface InjectionArenaRequest {
+  /** Prompt template under test, e.g. "Customer message: ${msg} ..." */
+  originalPrompt?: string;
+  /** PromptLint-hardened version; built with the rule-based optimizer when omitted */
+  hardenedPrompt?: string;
+  /** Server only: take the prompt from a demo preset when originalPrompt is omitted */
+  presetId?: string;
+  /** Model attacked on both sides (defaults to the benchmark's original model) */
+  model?: string;
+  /** Attack ids to run; the full corpus when omitted */
+  attacks?: string[];
+  /** Template variable the payload is injected into; the first one found when omitted */
+  targetVariable?: string;
+  /** Benign values for the other template variables */
+  variableValues?: Record<string, string>;
+  /** Parallel gateway calls (1-8, default 4) */
+  concurrency?: number;
+}
+
+/** One model call in the arena (an attack against one side) */
+export interface InjectionArenaAttempt {
+  /** Full prompt sent as the user message */
+  promptSent: string;
+  output: string;
+  /** The canary appeared in the output: the injection took control */
+  succeeded: boolean;
+  /** "exact" canary, "near" (at most two character slips joining it) or "none" */
+  canaryMatch: "exact" | "near" | "none";
+  /** true when this result came from the offline simulator, not a live Otari call */
+  simulated: boolean;
+  /** Why the live call failed, when it fell back to the simulator */
+  gatewayError?: string;
+  latencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  otariRequestId: string;
+  idempotentReplayed: boolean;
+  gatewayCostUsd?: number;
+}
+
+export interface InjectionArenaAttackResult extends InjectionAttackInfo {
+  /** The payload as injected (with this run's canary) */
+  payload: string;
+  original: InjectionArenaAttempt;
+  hardened: InjectionArenaAttempt;
+}
+
+export interface InjectionArenaSideSummary {
+  /** Attacks run against this side */
+  attempted: number;
+  /** Attempts answered by a live gateway call (the denominator when the run is live or mixed) */
+  liveAttempts: number;
+  /** Attempts that fell back to the simulator because the gateway call failed */
+  failedCalls: number;
+  /** Attacks whose canary appeared in the output (counted over live attempts unless fully simulated) */
+  succeeded: number;
+  /** succeeded / denominator, 0-100 */
+  successRatePct: number;
+}
+
+export interface InjectionArenaResponse {
+  runId: string;
+  timestamp: string;
+  model: string;
+  /** Per-run marker each attack asks the model to print, e.g. PWNED-1a2b3c4d */
+  canary: string;
+  /** "live": every call went through Otari; "simulated": none did; "mixed": some calls failed */
+  mode: "live" | "simulated" | "mixed";
+  /** true unless every call was live; simulated results are not evidence */
+  simulated: boolean;
+  /** Distinct gateway errors seen during the run */
+  gatewayErrors: string[];
+  originalPrompt: string;
+  hardenedPrompt: string;
+  /** "provided" when the caller passed the hardened prompt, "rules" when built by the rule-based optimizer */
+  hardenedSource: "provided" | "rules";
+  /** Template variable the payload was injected into (undefined when the prompt had none and the payload was appended) */
+  targetVariable?: string;
+  summary: {
+    original: InjectionArenaSideSummary;
+    hardened: InjectionArenaSideSummary;
+  };
+  /** Sum of gateway-reported cost over all live calls, when the gateway reported it */
+  totalGatewayCostUsd?: number;
+  durationMs: number;
+  results: InjectionArenaAttackResult[];
+}
