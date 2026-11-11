@@ -228,6 +228,8 @@ export interface BenchmarkResponse {
     /** 0-100 agreement between the two outputs; null when either side was simulated */
     semanticEquivalenceScore: number | null;
   };
+  /** Agreement re-checked by Python a model wrote and ran in Otari's code-execution sandbox */
+  codeCheck?: OtariCodeCheck;
 }
 
 export interface PRCostReport {
@@ -512,6 +514,52 @@ export interface OtariEndUserBudgetStatus {
 }
 
 /** What the app does with Otari's features, for the health check and the UI */
+/** One tool call Otari ran itself, from the response's top-level `otari_tool_calls` */
+export interface OtariToolCall {
+  id?: string;
+  /** e.g. "code_execution" */
+  type: string;
+  status?: string;
+  code?: string;
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number;
+}
+
+/** Output agreement computed by code that ran in Otari's sandbox (otari_code_execution) */
+export interface OtariCodeCheck {
+  /**
+   * verified: the sandbox ran the check and printed a verdict
+   * no_execution: the model answered without running code (its answer is not trusted)
+   * failed: code ran but produced no verdict
+   * unavailable: the call was refused or failed (e.g. code execution not enabled)
+   * skipped: nothing to compare (a side was simulated, blocked or empty)
+   */
+  status: "verified" | "no_execution" | "failed" | "unavailable" | "skipped";
+  reason?: string;
+  /** Model asked to write and run the check */
+  model: string;
+  servedModel?: string;
+  /** json: both outputs are JSON objects, compared key by key; text: word-set F1 */
+  mode?: "json" | "text";
+  validA?: boolean;
+  validB?: boolean;
+  sameKeys?: boolean;
+  matchingValues?: number;
+  totalKeys?: number;
+  agreementPct?: number;
+  /** The code the sandbox ran, and what it printed */
+  code?: string;
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number;
+  executions: number;
+  costUsd?: number;
+  latencyMs: number;
+  otariRequestId?: string;
+  idempotentReplayed?: boolean;
+}
+
 export interface OtariFeatureConfig {
   /** Guardrail profile sent with requests, e.g. "prompt-injection" */
   guardrailProfile: string;
@@ -522,4 +570,7 @@ export interface OtariFeatureConfig {
   benchmarkOriginalModel: string;
   benchmarkOptimizedModel: string;
   arenaModel: string;
+  /** Benchmark agreement re-checked in Otari's code-execution sandbox */
+  codeExecution: boolean;
+  verifierModel: string;
 }

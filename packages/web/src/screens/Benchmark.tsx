@@ -1,6 +1,6 @@
 import { useState, type Dispatch, type SetStateAction } from "react";
-import { ArrowLeft, ChevronDown, Gauge, History, Play, RotateCw, Scale, Timer } from "lucide-react";
-import type { BenchmarkExecutionMetrics, BenchmarkResponse, ModelPricing } from "@promptlint/shared";
+import { ArrowLeft, ChevronDown, Gauge, History, Play, RotateCw, Scale, SquareTerminal, Timer } from "lucide-react";
+import type { BenchmarkExecutionMetrics, BenchmarkResponse, ModelPricing, OtariCodeCheck } from "@promptlint/shared";
 import type { BenchmarkInputs, BenchmarkRun } from "../App";
 import { api, errorMessage } from "../lib/api";
 import { ms, num, pct, tokenChange, usd } from "../lib/format";
@@ -130,6 +130,7 @@ export function Benchmark({
             <RunCard label="Original" m={shown.result.original} />
             <RunCard label="Optimized" m={shown.result.optimized} accent />
           </div>
+          {shown.result.codeCheck && <CodeCheckCard check={shown.result.codeCheck} />}
           {runs.length > 1 && <RunHistory runs={runs} selected={shown.n} onSelect={setSelected} />}
         </>
       )}
@@ -235,6 +236,91 @@ function AgreementScore({ score }: { score: number | null }) {
         <div className={cx("h-full rounded-full", bar)} style={{ width: `${Math.max(0, Math.min(100, score))}%` }} />
       </div>
     </div>
+  );
+}
+
+const CODE_CHECK_STATUS: Record<OtariCodeCheck["status"], { label: string; tone: "green" | "amber" | "red" | "neutral" }> = {
+  verified: { label: "verified in sandbox", tone: "green" },
+  no_execution: { label: "no code ran", tone: "amber" },
+  failed: { label: "code failed", tone: "red" },
+  unavailable: { label: "unavailable", tone: "neutral" },
+  skipped: { label: "skipped", tone: "neutral" }
+};
+
+/** Otari code execution: agreement measured by Python a model wrote and Otari ran in its sandbox */
+function CodeCheckCard({ check }: { check: OtariCodeCheck }) {
+  const st = CODE_CHECK_STATUS[check.status];
+  const verified = check.status === "verified" && check.agreementPct !== undefined;
+  const score = check.agreementPct ?? 0;
+  const tone = score >= 75 ? "green" : score >= 50 ? "amber" : "red";
+  const yesNo = (v?: boolean) => (v === undefined ? "—" : v ? "yes" : "no");
+  return (
+    <Card
+      title={
+        <span className="flex min-w-0 items-center gap-2">
+          <span>Sandbox check</span>
+          <span className="truncate text-xs font-normal text-ink-400">Otari code execution</span>
+        </span>
+      }
+      icon={<SquareTerminal className="size-4" />}
+      actions={
+        <>
+          {check.idempotentReplayed && <ReplayBadge replayed />}
+          <Badge tone={st.tone}>{st.label}</Badge>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <p className="text-xs leading-5 text-ink-400">
+          {check.servedModel ?? check.model} called Otari&apos;s code-execution tool, and Otari ran PromptLint&apos;s comparison
+          script on both outputs in its sandbox. The score is what that script printed, not the model&apos;s opinion.
+          {check.reason && <span className="text-ink-300"> {check.reason}.</span>}
+        </p>
+        {verified && (
+          <div className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 xl:grid-cols-5">
+            <Stat label="Agreement (by code)" value={`${Math.round(score)}/100`} tone={tone} />
+            <Stat
+              label="Compared as"
+              value={check.mode === "json" ? "JSON keys" : "text"}
+              sub={
+                check.mode === "json"
+                  ? `${check.matchingValues ?? 0}/${check.totalKeys ?? 0} values match`
+                  : "word-set F1"
+              }
+            />
+            <Stat label="Valid JSON" value={`${yesNo(check.validA)} / ${yesNo(check.validB)}`} sub="original / optimized" />
+            <Stat label="Sandbox runs" value={num(check.executions)} sub={check.exitCode !== undefined ? `exit ${check.exitCode}` : undefined} />
+            <Stat
+              label="Check cost"
+              value={check.costUsd !== undefined ? usd(check.costUsd, { precise: true }) : "—"}
+              sub={ms(check.latencyMs)}
+            />
+          </div>
+        )}
+        {check.code && (
+          <details className="group">
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-ink-400 hover:text-ink-200">
+              <ChevronDown className="size-3.5 -rotate-90 transition-transform group-open:rotate-0" />
+              Script Otari ran, and its output
+            </summary>
+            <pre className="mt-2 max-h-72 overflow-auto rounded-lg border border-ink-700 bg-ink-950 px-3 py-2.5 font-mono text-[12px] leading-5 text-ink-300">
+              {check.code}
+            </pre>
+            {(check.stdout || check.stderr) && (
+              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-ink-700 bg-ink-950 px-3 py-2.5 font-mono text-[12px] leading-5 text-emerald-200">
+                {check.stdout}
+                {check.stderr && <span className="text-red-300">{"\n" + check.stderr}</span>}
+              </pre>
+            )}
+          </details>
+        )}
+        {check.otariRequestId && (
+          <div className="font-mono text-[11px] text-ink-500">
+            Otari-Request-ID <span className="text-ink-300">{check.otariRequestId}</span>
+          </div>
+        )}
+      </div>
+    </Card>
   );
 }
 
