@@ -20,6 +20,8 @@ import {
   otariTargetReasoningEffort
 } from "./otari-client";
 import { computeOutputAgreement } from "./similarity";
+import { otariCodeExecutionEnabled, otariVerifierModel, verifyAgreementWithCodeExecution } from "./code-verifier";
+import type { OtariCodeCheck } from "@promptlint/shared";
 
 const DEFAULT_OPTIMIZER_MODEL = "alibaba/qwen-3.5-35b-a3b";
 const REASONING_EFFORTS = ["none", "low", "medium", "high"] as const;
@@ -701,6 +703,25 @@ export async function benchmarkPromptsViaOtari(
     })
   ]);
 
+  // Otari code execution: re-measure agreement with Python run in Otari's sandbox
+  let codeCheck: OtariCodeCheck | undefined;
+  if (otariCodeExecutionEnabled()) {
+    const unusable = [origResult, optResult].find((r) => r.simulated || r.blocked || !r.content.trim());
+    codeCheck = unusable
+      ? {
+          status: "skipped",
+          reason: unusable.blocked
+            ? "a side was refused by Otari"
+            : unusable.simulated
+              ? "a side was simulated"
+              : "a side returned no output",
+          model: otariVerifierModel(),
+          executions: 0,
+          latencyMs: 0
+        }
+      : await verifyAgreementWithCodeExecution(origResult.content, optResult.content, { client });
+  }
+
   const origPricing = pricingForRun(originalModel, origResult);
   const optPricing = pricingForRun(optimizedModel, optResult);
 
@@ -802,7 +823,8 @@ export async function benchmarkPromptsViaOtari(
         origResult.simulated || optResult.simulated || origResult.blocked || optResult.blocked
           ? null
           : computeOutputAgreement(origResult.content, optResult.content)
-    }
+    },
+    ...(codeCheck ? { codeCheck } : {})
   };
 }
 
@@ -845,6 +867,8 @@ export function otariFeatureConfig(): OtariFeatureConfig {
     benchmarkOriginalModel: process.env.OTARI_BENCHMARK_ORIGINAL_MODEL || DEFAULT_BENCHMARK_ORIGINAL_MODEL,
     benchmarkOptimizedModel: process.env.OTARI_BENCHMARK_OPTIMIZED_MODEL || DEFAULT_BENCHMARK_OPTIMIZED_MODEL,
     arenaModel:
-      process.env.OTARI_ARENA_MODEL || process.env.OTARI_BENCHMARK_ORIGINAL_MODEL || DEFAULT_BENCHMARK_ORIGINAL_MODEL
+      process.env.OTARI_ARENA_MODEL || process.env.OTARI_BENCHMARK_ORIGINAL_MODEL || DEFAULT_BENCHMARK_ORIGINAL_MODEL,
+    codeExecution: otariCodeExecutionEnabled(),
+    verifierModel: otariVerifierModel()
   };
 }

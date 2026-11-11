@@ -7,7 +7,8 @@ import {
   type OtariEndUserBudgetStatus,
   type OtariGuardrailMode,
   type OtariGuardrailResult,
-  type OtariRoutingInfo
+  type OtariRoutingInfo,
+  type OtariToolCall
 } from "@promptlint/shared";
 import { estimateTokens } from "./tokenizer";
 
@@ -63,6 +64,14 @@ export interface OtariChatRequest {
   user?: string;
   /** Otari guardrails to run on the input before the provider is called */
   guardrails?: OtariGuardrailRequest[];
+  /** Tools Otari runs itself, e.g. [{ type: "otari_code_execution" }] */
+  tools?: OtariToolDeclaration[];
+}
+
+/** A built-in tool Otari executes server-side in its own tool loop */
+export interface OtariToolDeclaration {
+  type: "otari_code_execution" | "otari_web_search" | "otari_web_fetch";
+  [option: string]: unknown;
 }
 
 /** An entry of Otari's top-level `guardrails` request field */
@@ -100,6 +109,24 @@ export interface OtariChatResponse {
   blocked?: OtariBlock;
   /** Otari-End-User-Budget: the per-user budget the end user is on */
   endUserBudget?: string;
+  /** Tool calls Otari ran itself (otari_tool_calls), e.g. sandboxed code and its output */
+  toolCalls?: OtariToolCall[];
+}
+
+/** Read Otari's top-level `otari_tool_calls` (snake_case) into OtariToolCall */
+export function parseOtariToolCalls(raw: unknown): OtariToolCall[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  return raw
+    .filter((c) => c && typeof c === "object")
+    .map((c: any) => ({
+      ...(typeof c.id === "string" ? { id: c.id } : {}),
+      type: String(c.type ?? "unknown"),
+      ...(typeof c.status === "string" ? { status: c.status } : {}),
+      ...(typeof c.code === "string" ? { code: c.code } : {}),
+      ...(typeof c.stdout === "string" ? { stdout: c.stdout } : {}),
+      ...(typeof c.stderr === "string" ? { stderr: c.stderr } : {}),
+      ...(typeof c.exit_code === "number" ? { exitCode: c.exit_code } : {})
+    }));
 }
 
 /** Guardrail profile PromptLint asks Otari to run (OTARI_GUARDRAIL_PROFILE, default "prompt-injection") */
@@ -237,7 +264,8 @@ export class OtariGatewayClient {
       max_tokens: req.max_tokens ?? 512,
       ...(req.reasoning_effort ? { reasoning_effort: req.reasoning_effort } : {}),
       ...(req.user && otariEndUserBudgetsEnabled() ? { user: req.user } : {}),
-      ...(req.guardrails && req.guardrails.length > 0 ? { guardrails: req.guardrails } : {})
+      ...(req.guardrails && req.guardrails.length > 0 ? { guardrails: req.guardrails } : {}),
+      ...(req.tools && req.tools.length > 0 ? { tools: req.tools } : {})
     };
     // Otari refuses a reused key with a different body (422), so the default key
     // covers everything sent: another end user or guardrail mode is a new request
@@ -304,6 +332,7 @@ export class OtariGatewayClient {
           const outputTokens =
             data.usage?.completion_tokens || estimateTokens(content);
 
+          const toolCalls = parseOtariToolCalls(data.otari_tool_calls);
           const result: OtariChatResponse = {
             content,
             model: req.model,
@@ -320,7 +349,8 @@ export class OtariGatewayClient {
             simulated: false,
             ...(routing ? { routing } : {}),
             ...(guardrails ? { guardrails } : {}),
-            ...(endUserBudget ? { endUserBudget } : {})
+            ...(endUserBudget ? { endUserBudget } : {}),
+            ...(toolCalls ? { toolCalls } : {})
           };
           const costUsd = Number(data.usage?.cost_usd ?? data.usage?.estimated_cost);
           if (Number.isFinite(costUsd)) result.gatewayCostUsd = costUsd;

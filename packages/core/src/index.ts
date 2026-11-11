@@ -7,3 +7,4 @@ export * from "./optimizer";
 export * from "./repo-scanner";
 export * from "./similarity";
 export * from "./injection-arena";
+export * from "./code-verifier";
